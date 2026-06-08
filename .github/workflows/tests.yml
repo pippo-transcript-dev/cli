@@ -1,0 +1,24 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Compile package
+        run: python -m py_compile pippo_transcript/core.py pippo_transcript/cli.py pippo_transcript/langs.py
+      - name: Run tests
+        run: pytest tests -q
+      - name: Check CLI
+        run: pippo-transcript --help && pippo-transcript-langs --help
