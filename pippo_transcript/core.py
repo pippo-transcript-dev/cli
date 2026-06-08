@@ -3310,6 +3310,11 @@ def extract_business_card_content(result):
     if not lines:
         return {}
 
+    source_type = result.get("source_type", "")
+    page_count = result.get("page_count") or len(result.get("pages", []))
+    if source_type != "image" and (page_count != 1 or len(lines) > 18):
+        return {}
+
     text = "\n".join(lines)
     emails = extract_email_candidates(text)
     phones = extract_phone_candidates(text)

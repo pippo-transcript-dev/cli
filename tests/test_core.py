@@ -182,6 +182,23 @@ def test_extract_business_card_content():
     assert structured["website"] == "www.studio-atlas.fr"
 
 
+def test_extract_business_card_rejects_long_document_with_contact_footer():
+    result = {
+        "source": "plan.pdf",
+        "source_type": "pdf",
+        "page_count": 1,
+        "pages": [{
+            "ocr_text": "\n".join(
+                ["LEGENDE BAUARTEN", "Mauerwerk", "Wandhydrant mit Brandmelder"]
+                + [f"Ligne technique {index}" for index in range(25)]
+                + ["post@kollendtwaldschmidt.de", "+49 30 8179 7710"]
+            )
+        }],
+    }
+
+    assert extract_business_card_content(result) == {}
+
+
 def test_experimental_graph_analysis_detects_basic_chart(tmp_path):
     from PIL import Image, ImageDraw
 
