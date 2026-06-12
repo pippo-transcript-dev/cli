@@ -291,6 +291,24 @@ def test_bki_document_is_not_classified_as_receipt():
     )
 
 
+def test_long_classic_document_is_not_classified_as_receipt():
+    result = {
+        "source": "proposal.pdf",
+        "source_type": "pdf",
+        "page_count": 14,
+        "pages": [{
+            "ocr_text": "\n".join([
+                "PROPOSITION TECHNIQUE & FINANCIERE",
+                "MISSION G2 Phase AVP - G2 Phase PRO",
+                "Montant TTC 52 972,06 €",
+                "TVA à 20,00%",
+            ])
+        }],
+    }
+
+    assert extract_receipt_content(result) == {}
+
+
 def test_bki_gebaeudeart_table_preserves_percent_column():
     table = bki_markdown_table_from_ocr(
         "353 Gebäudeart > €/Einheit\n"

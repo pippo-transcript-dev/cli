@@ -3541,6 +3541,10 @@ def extract_receipt_content(result):
             if amount_from_filename or part == "unknown-amount":
                 break
 
+    page_count = result.get("page_count") or len(result.get("pages", []))
+    if not filename_receipt and page_count > 2:
+        return {}
+
     amount_candidates = extract_amount_candidates(text)
     detected_amounts = unique_preserve_order([candidate["value"] for candidate in amount_candidates])
     detected_dates = extract_date_candidates(text)
