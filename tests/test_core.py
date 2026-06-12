@@ -8,6 +8,7 @@ from pippo_transcript.core import (
     extract_business_card_content,
     extract_receipt_content,
     extract_structured_content,
+    bki_markdown_table_from_ocr,
     is_bki_document_text,
     markdown_table_from_rows,
     markdown_table_to_html,
@@ -288,6 +289,18 @@ def test_bki_document_is_not_classified_as_receipt():
         "LB 008 Wasserhaltungsarbeiten Kostenstand:1.Quartal 2026 "
         "Nr. Positionen Einheit brutto € netto € © BKI Baukosteninfomationszentrum"
     )
+
+
+def test_bki_gebaeudeart_table_preserves_percent_column():
+    table = bki_markdown_table_from_ocr(
+        "353 Gebäudeart > €/Einheit\n"
+        "Büro- und Verwaltungsgebäude, einfacher Standard 153,00 168,00 184,00 4,4%\n"
+        "Pflegeheime 78,00 142,00 219,00 3,7%\n"
+    )
+
+    assert "KG an 300 (%)" in table
+    assert "4,4%" in table
+    assert "3,7%" in table
 
 
 def test_extract_business_card_content():

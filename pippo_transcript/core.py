@@ -1667,6 +1667,15 @@ def normalize_bki_leistungsbereich_value(value):
     return value
 
 
+def normalize_bki_percent_value(value):
+    value = normalize_bki_value(value.rstrip("%"))
+    if not value or value == "-":
+        return value
+    if re.fullmatch(r"\d+(?:,\d+)?", value):
+        return f"{value}%"
+    return value
+
+
 def normalize_bki_label(label):
     label = normalize_inline_text(label)
     label = re.sub(r"^(?:[°>*<D4\s|.;:_-]*(?:KKW|min|von|Mittelwert|bis|max)\s+)+", "", label, flags=re.I)
@@ -1715,7 +1724,7 @@ def bki_ocr_token_to_value(token):
     if re.fullmatch(r"\d+,", token):
         return token
     if re.fullmatch(r"\d+(?:[,.]\d+)?%?", token):
-        return token.rstrip("%")
+        return token
     return ""
 
 
@@ -1769,6 +1778,9 @@ def extract_bki_rows_from_ocr(ocr_text):
 
         if expected_values == 3:
             values = [normalize_bki_leistungsbereich_value(value) for value in trailing]
+        elif expected_values == 4:
+            values = [normalize_bki_value(value) for value in trailing[:3]]
+            values.append(normalize_bki_percent_value(trailing[3]) if len(trailing) > 3 else "")
         else:
             values = [normalize_bki_value(value) for value in trailing]
         while len(values) < expected_values:
@@ -1789,7 +1801,7 @@ def bki_markdown_table_from_ocr(ocr_text):
     if expected_values == 3:
         headers.extend(["min", "Mittelwert", "max"])
     elif expected_values == 4:
-        headers.extend(["min", "Mittelwert", "max", "KG an 300"])
+        headers.extend(["min", "Mittelwert", "max", "KG an 300 (%)"])
     else:
         headers.extend(["Valeur 1", "Valeur 2", "Valeur 3", "Valeur 4", "Valeur 5"])
 
