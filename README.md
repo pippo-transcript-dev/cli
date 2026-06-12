@@ -17,8 +17,8 @@ Elle rend aussi les pages en images, extrait les images intégrées aux PDF, rep
 - Extraction de graphiques et visuels vectoriels dans `visuals/`.
 - Reconstruction Markdown de certains tableaux détectés.
 - Rendu Markdown/HTML dans l'ordre de la page : texte, tableaux, visuels et images sont replacés selon leurs coordonnées.
-- Analyse simple de certains graphiques à partir des tableaux associés.
-- Analyse graphique expérimentale niveau 2 sans LLM par lecture directe de l'image, avec transcription de dashboard, images des sous-graphiques, matrices/heatmaps quand elles sont détectables, bar charts structurés, type probable, table de métriques détectées et lecture OCR spatiale.
+- Détection prudente des graphiques et conservation de leurs crops dans `visuals/`.
+- Analyse graphique expérimentale disponible dans le JSON et le mode `audit`, mais masquée du Markdown propre quand elle n'est pas suffisamment fiable.
 - Correction fuzzy de libellés OCR et validation géométrique de certains graphiques à barres quand l'option `vision` est installée.
 - Pour les donuts/camemberts, le script conserve le crop du graphique pour analyse humaine, sans inventer de tableau de segments.
 - Mode Markdown lisible ou audit avec `--markdown-mode clean|audit`.
@@ -256,7 +256,7 @@ Par défaut, le Markdown est en mode propre :
 pippo-transcript ./documents -o ./pippo-transcripted-files --markdown-mode clean
 ```
 
-Le mode `clean` masque les éléments techniques peu lisibles comme les tuiles internes de PDF, les micro-images et les doublons. Les données restent dans le JSON.
+Le mode `clean` masque les éléments techniques peu lisibles comme les titres `### Texte`, les tuiles internes de PDF, les micro-images, les doublons et les analyses graphiques expérimentales. Les graphiques restent visibles sous forme de crops à vérifier. Les données brutes restent dans le JSON.
 
 Pour une sortie d'audit complète :
 
@@ -378,13 +378,13 @@ Le fichier `.txt` contient le texte brut page par page.
 - Relier certains graphiques aux tableaux proches pour produire une analyse simple.
 - Produire des données structurées pour certains tableaux métier, par exemple les mesures piézométriques.
 - Produire un rapport HTML consultable directement.
-- Proposer une lecture graphique niveau 2 expérimentale sur les images de graphiques : transcription de dashboard en mode propre, crops de chaque KPI/panneau/graphique, matrices/heatmaps OCR quand elles sont détectables, type probable, indices visuels, métriques OCR structurées et lignes OCR spatiales en mode audit.
+- Proposer une lecture graphique niveau 2 expérimentale dans le JSON et le mode audit : crops de chaque KPI/panneau/graphique, matrices/heatmaps OCR quand elles sont détectables, type probable, indices visuels, métriques OCR structurées et lignes OCR spatiales.
 
 ## Limites Connues
 
 - Tous les tableaux PDF ne sont pas encore convertis parfaitement cellule par cellule.
-- Les graphiques sont analysés quand il existe suffisamment d'indices ; sinon ils sont conservés comme images/crops à vérifier.
-- L'analyse graphique niveau 2 est expérimentale : elle détecte zone graphique, couleurs/séries probables, axes/grilles, type probable, valeurs OCR contextualisées, lignes OCR regroupées par position, blocs dashboard probables et certaines matrices/heatmaps. En mode `clean`, les détails OCR techniques sont masqués quand une transcription dashboard existe ; chaque carte KPI, panneau central et panneau bas reçoit aussi son image dédiée dans `visuals/dashboard_parts/`. Quelques templates de dashboard courants bénéficient d'un nettoyage de libellés OCR et de matrices corrigées quand la structure est clairement reconnue. En mode `audit`, les détails techniques restent visibles. Les matrices issues de petits chiffres OCR restent à vérifier visuellement. Cela ne remplace pas encore une lecture métier complète ni une reconstruction géométrique exacte de chaque courbe/barre.
+- Les graphiques sont conservés comme images/crops à vérifier dans le Markdown propre. L'analyse automatique reste expérimentale et n'est pas affichée par défaut.
+- L'analyse graphique niveau 2 est expérimentale : elle détecte zone graphique, couleurs/séries probables, axes/grilles, type probable, valeurs OCR contextualisées, lignes OCR regroupées par position, blocs dashboard probables et certaines matrices/heatmaps. En mode `clean`, ces détails sont masqués pour éviter de présenter une interprétation fragile comme une transcription fidèle. En mode `audit`, les détails techniques restent visibles. Les matrices issues de petits chiffres OCR restent à vérifier visuellement. Cela ne remplace pas encore une lecture métier complète ni une reconstruction géométrique exacte de chaque courbe/barre.
 - Les champs de reçus et cartes de visite sont prudents : ils peuvent rester vides ou être marqués avec une confiance moyenne quand les indices sont ambigus.
 - L'ordre multi-colonnes est heuristique et peut nécessiter un contrôle sur des mises en page éditoriales complexes.
 - Pour obtenir une extraction parfaite sur un nouveau modèle de document, il faut parfois ajouter une règle spécialisée.

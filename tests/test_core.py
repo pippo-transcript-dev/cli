@@ -1,4 +1,5 @@
 from pathlib import Path
+from io import StringIO
 
 from pippo_transcript.core import (
     annotate_repeated_text_blocks,
@@ -10,6 +11,7 @@ from pippo_transcript.core import (
     markdown_table_to_html,
     page_elements,
     page_text_outside_regions,
+    write_page_element_markdown,
 )
 
 
@@ -108,6 +110,87 @@ def test_page_elements_keep_table_between_text_blocks():
 
     assert [element["type"] for element in elements] == ["text", "table", "text"]
     assert elements[1]["label"] == "Tableau central"
+
+
+def test_clean_page_elements_hide_full_page_ocr_when_visual_dominates():
+    page = {
+        "width": 800,
+        "height": 500,
+        "text_blocks": [],
+        "ocr_text": "OCR bruité d'un dashboard graphique",
+        "table_crops": [],
+        "visual_crops": [{
+            "bbox": [0, 0, 790, 490],
+            "label": "Graphique expérimental",
+            "image": "graph.png",
+            "source": "experimental-graph-image",
+        }],
+        "embedded_images": [],
+    }
+
+    elements = page_elements(page, markdown_mode="clean")
+
+    assert [element["type"] for element in elements] == ["visual"]
+
+
+def test_clean_markdown_writes_text_without_technical_heading():
+    buffer = StringIO()
+
+    write_page_element_markdown(
+        buffer,
+        {"type": "text", "text": "Une phrase\nqui continue sur la ligne suivante."},
+        markdown_mode="clean",
+    )
+
+    rendered = buffer.getvalue()
+    assert "### Texte" not in rendered
+    assert "Une phrase qui continue" in rendered
+
+
+def test_clean_markdown_keeps_visual_as_crop_without_analysis(tmp_path):
+    image_path = tmp_path / "graph.png"
+    image_path.write_bytes(b"fake")
+    buffer = StringIO()
+
+    write_page_element_markdown(
+        buffer,
+        {
+            "type": "visual",
+            "payload": {
+                "label": "Graphique expérimental",
+                "image": str(image_path),
+                "analysis": "Analyse graphique expérimentale niveau 2",
+                "graph_metrics": [{"label": "A", "value": "1"}],
+            },
+        },
+        markdown_mode="clean",
+    )
+
+    rendered = buffer.getvalue()
+    assert "Graphique ou visuel à vérifier" in rendered
+    assert "Analyse graphique expérimentale" not in rendered
+    assert "Métriques détectées" not in rendered
+    assert str(image_path.resolve()) in rendered
+
+
+def test_clean_markdown_writes_table_without_label_when_parsed():
+    buffer = StringIO()
+
+    write_page_element_markdown(
+        buffer,
+        {
+            "type": "table",
+            "payload": {
+                "label": "Tableau 1",
+                "markdown_table": "| A |\n|---|\n| 1 |",
+            },
+        },
+        markdown_mode="clean",
+    )
+
+    rendered = buffer.getvalue()
+    assert "### Tableau" not in rendered
+    assert "| A |" in rendered
 
 
 def test_repeated_header_footer_blocks_are_hidden_from_clean_elements():

@@ -3602,6 +3602,15 @@ def write_reflowed_text_block(f, title, text):
     f.write("\n\n")
 
 
+def write_reflowed_text(f, text):
+    text = reflow_text_for_markdown(text)
+    if not text:
+        return
+
+    f.write(text)
+    f.write("\n\n")
+
+
 def write_kostenrahmen_meta(f, structured):
     meta = structured.get("meta", {})
     if meta:
@@ -3696,9 +3705,7 @@ def write_kostenrahmen_notes(f, structured):
 def write_kostenrahmen_accuracy(f, structured):
     if structured.get("accuracy_notes"):
         f.write("\n### Genauigkeit Der Kostenermittlung\n\n")
-        f.write("```text\n")
-        f.write(markdown_escape_code_fence("\n".join(structured["accuracy_notes"])))
-        f.write("\n```\n")
+        write_reflowed_text(f, "\n".join(structured["accuracy_notes"]))
     f.write("\n")
 
 
@@ -3721,9 +3728,7 @@ def write_kostenrahmen_hinweise_in_visual_order(f, structured):
         return
 
     f.write("### Hinweise Zur Kostenermittlung\n\n")
-    f.write("```text\n")
-    f.write(markdown_escape_code_fence("\n".join(lines)))
-    f.write("\n```\n\n")
+    write_reflowed_text(f, "\n".join(lines))
 
 
 def line_index(lines, value):
@@ -3739,6 +3744,14 @@ def write_text_block_from_lines(f, title, lines):
         return
 
     write_reflowed_text_block(f, title, text)
+
+
+def write_text_from_lines(f, lines):
+    text = "\n".join(line for line in lines if line.strip()).strip()
+    if not text:
+        return
+
+    write_reflowed_text(f, text)
 
 
 def block_overlaps_regions(block, regions):
@@ -4101,15 +4114,6 @@ def page_elements(page, markdown_mode="clean"):
             "confidence": "high",
         })
 
-    if not elements and not page.get("text_blocks") and page.get("ocr_text"):
-        elements.append({
-            "type": "text",
-            "bbox": [0, 0, page.get("width", 0), page.get("height", 0)],
-            "text": page.get("ocr_text", ""),
-            "source": "image-text",
-            "confidence": "medium",
-        })
-
     for table in page.get("table_crops", []):
         elements.append({
             "type": "table",
@@ -4143,6 +4147,17 @@ def page_elements(page, markdown_mode="clean"):
             "source": "embedded-image",
             "confidence": "medium",
         })
+
+    if not page.get("text_blocks") and page.get("ocr_text"):
+        region_coverage = page_region_coverage(page, regions)
+        if not elements or markdown_mode == "audit" or region_coverage < 0.55:
+            elements.append({
+                "type": "text",
+                "bbox": [0, 0, page.get("width", 0), page.get("height", 0)],
+                "text": page.get("ocr_text", ""),
+                "source": "image-text",
+                "confidence": "medium",
+            })
 
     return sort_page_elements(elements, page, text_blocks)
 
@@ -4181,10 +4196,10 @@ def write_kostenrahmen_page_order(f, page, structured):
     key_idx = line_index(lines, "Kennwertermittlung")
 
     if summary_idx == -1 or key_idx == -1:
-        write_text_block_from_lines(f, "### Texte", lines)
+        write_text_from_lines(f, lines)
         return
 
-    write_text_block_from_lines(f, "### Texte", lines[:summary_idx])
+    write_text_from_lines(f, lines[:summary_idx])
     write_kostenrahmen_summary_table(
         f,
         structured,
@@ -4265,6 +4280,16 @@ def embedded_images_for_markdown(page, markdown_mode="clean"):
     ]
 
 
+def page_region_coverage(page, regions):
+    page_area = max(1.0, float(page.get("width", 0) or 0) * float(page.get("height", 0) or 0))
+    covered = 0.0
+    for region in regions:
+        rect = rect_from_bbox(region.get("bbox", []))
+        if rect.get_area() > 0:
+            covered += rect.get_area()
+    return min(1.0, covered / page_area)
+
+
 def has_bki_ocr_table(page):
     return any(
         table.get("source") == "ocr-bki"
@@ -4331,8 +4356,13 @@ def structured_summary_to_html(structured):
 
 
 def write_markdown_visual(f, visual, markdown_mode="clean"):
+    if markdown_mode != "audit":
+        if visual.get("image"):
+            f.write(f"![{visual.get('label', 'Visuel')}]({Path(visual['image']).resolve()})\n\n")
+        return
+
     dashboard_summary = visual.get("dashboard_summary")
-    show_technical_graph_details = markdown_mode == "audit" or not dashboard_summary
+    show_technical_graph_details = True
     if show_visual_analysis(visual, markdown_mode) and show_technical_graph_details:
         f.write("**Analyse**\n\n")
         f.write(visual["analysis"])
@@ -4354,12 +4384,18 @@ def write_markdown_visual(f, visual, markdown_mode="clean"):
 def write_page_element_markdown(f, element, markdown_mode="clean"):
     element_type = element.get("type")
     if element_type == "text":
-        write_reflowed_text_block(f, "### Texte", element.get("text", ""))
+        if markdown_mode == "audit":
+            write_reflowed_text_block(f, "### Texte", element.get("text", ""))
+        else:
+            write_reflowed_text(f, element.get("text", ""))
         return
 
     if element_type == "table":
         table = element.get("payload", {})
-        f.write(f"### {table.get('label', 'Tableau')}\n\n")
+        if markdown_mode == "audit":
+            f.write(f"### {table.get('label', 'Tableau')}\n\n")
+        elif not table.get("markdown_table") and table.get("image"):
+            f.write("### Tableau à vérifier\n\n")
         if table.get("markdown_table"):
             f.write(table["markdown_table"])
             f.write("\n\n")
@@ -4369,27 +4405,36 @@ def write_page_element_markdown(f, element, markdown_mode="clean"):
 
     if element_type == "visual":
         visual = element.get("payload", {})
-        title = "Graphique Et Données À Vérifier" if visual_has_graph_data(visual) else visual.get("label", "Visuel Extrait")
-        f.write(f"### {title}\n\n")
-        if title != visual.get("label") and visual.get("label"):
-            f.write(f"#### {visual['label']}\n\n")
+        if markdown_mode == "audit":
+            title = "Graphique Et Données À Vérifier" if visual_has_graph_data(visual) else visual.get("label", "Visuel Extrait")
+            f.write(f"### {title}\n\n")
+            if title != visual.get("label") and visual.get("label"):
+                f.write(f"#### {visual['label']}\n\n")
+        else:
+            f.write("### Graphique ou visuel à vérifier\n\n")
+            f.write("Cette zone a été extraite en image pour contrôle visuel.\n\n")
         write_markdown_visual(f, visual, markdown_mode=markdown_mode)
         return
 
     if element_type == "image":
         image = element.get("payload", {})
-        f.write("### Image Extraite\n\n")
         f.write(f"![Image page {image.get('page', '')}]({Path(image['image']).resolve()})\n\n")
 
 
 def page_element_to_html(element, markdown_mode="clean"):
     element_type = element.get("type")
     if element_type == "text":
-        return "<h3>Texte</h3>\n" + paragraph_text_to_html(element.get("text", ""))
+        if markdown_mode == "audit":
+            return "<h3>Texte</h3>\n" + paragraph_text_to_html(element.get("text", ""))
+        return paragraph_text_to_html(element.get("text", ""))
 
     if element_type == "table":
         table = element.get("payload", {})
-        parts = [f"<h3>{html.escape(table.get('label', 'Tableau'))}</h3>"]
+        parts = []
+        if markdown_mode == "audit":
+            parts.append(f"<h3>{html.escape(table.get('label', 'Tableau'))}</h3>")
+        elif not table.get("markdown_table") and table.get("image"):
+            parts.append("<h3>Tableau à vérifier</h3>")
         if table.get("markdown_table"):
             parts.append(markdown_table_to_html(table["markdown_table"]))
         if table.get("image"):
@@ -4400,6 +4445,17 @@ def page_element_to_html(element, markdown_mode="clean"):
 
     if element_type == "visual":
         visual = element.get("payload", {})
+        if markdown_mode != "audit":
+            parts = [
+                "<h3>Graphique ou visuel à vérifier</h3>",
+                "<p>Cette zone a été extraite en image pour contrôle visuel.</p>",
+            ]
+            if visual.get("image"):
+                parts.append(
+                    f"<div class=\"crop\"><img src=\"{html.escape(str(Path(visual['image']).resolve()))}\" alt=\"{html.escape(visual.get('label', 'Visuel'))}\"></div>"
+                )
+            return "\n".join(parts)
+
         title = "Graphique Et Données À Vérifier" if visual_has_graph_data(visual) else visual.get("label", "Visuel Extrait")
         parts = [f"<h3>{html.escape(title)}</h3>"]
         if title != visual.get("label") and visual.get("label"):
@@ -4424,10 +4480,7 @@ def page_element_to_html(element, markdown_mode="clean"):
 
     if element_type == "image":
         image = element.get("payload", {})
-        return (
-            "<h3>Image Extraite</h3>\n"
-            f"<div class=\"crop\"><img src=\"{html.escape(str(Path(image['image']).resolve()))}\" alt=\"Image page {html.escape(str(image.get('page', '')))}\"></div>"
-        )
+        return f"<div class=\"crop\"><img src=\"{html.escape(str(Path(image['image']).resolve()))}\" alt=\"Image page {html.escape(str(image.get('page', '')))}\"></div>"
 
     return ""
 
