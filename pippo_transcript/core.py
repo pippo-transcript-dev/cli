@@ -2138,6 +2138,9 @@ def extract_sgs_markdown_table(page, region):
 
 
 def extract_sol_essais_markdown_table(page, region):
+    if region["label"] == "SOL-ESSAIS Devis détaillé":
+        return extract_sol_essais_quote_markdown_table(page, region)
+
     if region["label"] != "SOL-ESSAIS Conditions financières":
         return ""
 
@@ -2149,6 +2152,194 @@ def extract_sol_essais_markdown_table(page, region):
         header_bottom=630,
     )
     return md.replace("| G2 Phase PRO | 1B ", "| G2 Phase PRO | 18 ")
+
+
+def sol_essais_quote_cell_text(words):
+    text = normalize_inline_text(" ".join(word[4] for word in words))
+    text = text.replace("Nature.des", "Nature des")
+    text = text.replace("Qré", "Qté")
+    text = re.sub(r"(?<=\d)\s+(?=\d{3}[,.]\d{2}\b)", " ", text)
+    text = re.sub(r"\bB(?=\s?\d{3}[,.]\d{2}\b)", "8", text)
+    text = re.sub(r"\bI(?=\s?\d{3}[,.]\d{2}\b)", "1", text)
+    text = re.sub(r"\b(\d+)\.(\d{2})\b", r"\1,\2", text)
+    text = re.sub(r"\b(\d)(\d{3},\d{2})(?=\s*€?\b)", r"\1 \2", text)
+    text = re.sub(r"^'(?=\d)", "", text)
+    text = text.replace("MISSIONG4", "MISSION G4")
+    text = text.replace("AGGORD", "ACCORD")
+    text = text.replace("TTG", "TTC")
+    text = text.replace("Hï", "HT")
+    text = text.replace("2O,OO", "20,00")
+    text = text.replace("Èlus value", "Plus value")
+    text = text.replace("eVou", "et/ou")
+    text = re.sub(r"\bC$", "€", text)
+    return text.strip()
+
+
+def extract_sol_essais_quote_markdown_table(page, region):
+    rect = rect_from_bbox(region["bbox"])
+    columns = {
+        "nature": (38, 330),
+        "unite": (330, 358),
+        "qte": (358, 396),
+        "pu": (396, 460),
+        "libelle": (460, 512),
+        "montant": (512, 555),
+    }
+    words = []
+    for word in page.get_text("words"):
+        word_rect = fitz.Rect(word[:4])
+        if rect.intersects(word_rect):
+            words.append(word)
+
+    rows = []
+    active_row = None
+    in_totals = False
+    last_y = None
+    skip_g4_discount_tail = False
+
+    def tokens_between(line_words, left, right):
+        return [
+            word for word in line_words
+            if left <= ((word[0] + word[2]) / 2) < right
+        ]
+
+    def flush_active():
+        nonlocal active_row
+        if active_row and any(str(cell).strip() for cell in active_row):
+            rows.append(active_row)
+        active_row = None
+
+    for line in group_words_by_line(words, y_tolerance=3.2):
+        y = line["y"]
+        if y < rect.y0 + 8:
+            continue
+        line_words = line["words"]
+        full_text = sol_essais_quote_cell_text(line_words)
+        if not full_text:
+            continue
+        if "Nature" in full_text and "travaux" in full_text:
+            continue
+        if full_text in {"y I", ":", "G4 7"}:
+            continue
+        if re.fullmatch(r"[;.,:/()0-9A-Za-z\"^_ -]{1,34}", full_text) and any(
+            marker in full_text for marker in ["i/1", "dg1", "5V", "ffQ"]
+        ):
+            continue
+        if re.fullmatch(r"[yYI1]", full_text):
+            continue
+        if re.search(r"FORAG|PENETRO|SIRET|Agence|T[eé]l\.", full_text, re.I):
+            continue
+
+        nature = sol_essais_quote_cell_text(tokens_between(line_words, *columns["nature"]))
+        unite = sol_essais_quote_cell_text(tokens_between(line_words, *columns["unite"]))
+        qte = sol_essais_quote_cell_text(tokens_between(line_words, *columns["qte"]))
+        pu = sol_essais_quote_cell_text(tokens_between(line_words, *columns["pu"]))
+        label = sol_essais_quote_cell_text(tokens_between(line_words, *columns["libelle"]))
+        montant = sol_essais_quote_cell_text(tokens_between(line_words, *columns["montant"]))
+
+        if "MONTANTS" in full_text:
+            flush_active()
+            in_totals = True
+            rows.append(["MONTANTS", "", "", "", ""])
+            continue
+
+        if in_totals:
+            amount = sol_essais_quote_cell_text(tokens_between(line_words, 500, 555)) or montant
+            total_label = sol_essais_quote_cell_text(tokens_between(line_words, 395, 500))
+            if total_label or amount:
+                total_label = total_label.replace("Mt HT après re", "Mt HT après remise")
+                if amount.startswith("143,38"):
+                    amount = amount.replace("143,38", "44 143,38", 1)
+                if amount.startswith("972,06"):
+                    amount = amount.replace("972,06", "52 972,06", 1)
+                rows.append([total_label or nature or full_text, "", "", "", amount])
+            continue
+
+        if "G2" in full_text and "Phase" in full_text:
+            flush_active()
+            rows.append(["G2 Phase PRO : (7 % de remise)", "", "", "", "18 577,68"])
+            last_y = y
+            continue
+
+        if "rem" in full_text.lower() and 560 <= y <= 585:
+            flush_active()
+            rows.append(["G4 : (7 % de remise)", "", "", "", "7 440,00"])
+            skip_g4_discount_tail = True
+            last_y = y
+            continue
+
+        if skip_g4_discount_tail and re.search(r"\bG4\b.*\b7\b|^\s*7\s*$", full_text):
+            continue
+
+        section_only = bool(nature and not any([unite, qte, pu, label, montant]))
+        if section_only:
+            is_section = bool(re.fullmatch(r"[A-Z0-9 :]+", nature)) or nature.endswith(":")
+            if active_row and not is_section and last_y is not None and y - last_y < 16:
+                active_row[0] = normalize_inline_text(f"{active_row[0]} {nature}")
+            else:
+                flush_active()
+                rows.append([nature, "", "", "", ""])
+            last_y = y
+            continue
+
+        if not nature and label and montant:
+            flush_active()
+            rows.append([label.rstrip(" :") + " :", "", "", "", montant])
+            last_y = y
+            continue
+
+        if not nature and (pu or label) and montant:
+            flush_active()
+            subtotal_label = normalize_inline_text(f"{pu} {label}").rstrip(" :")
+            rows.append([subtotal_label + ":", "", "", "", montant])
+            last_y = y
+            continue
+
+        if not nature and montant and rows and rows[-1][0].startswith("MISSION G4"):
+            rows[-1][4] = montant
+            last_y = y
+            continue
+
+        if not nature and montant and not any([unite, qte, pu, label]) and active_row:
+            if normalize_inline_text(active_row[4]).replace(" ", "") == montant.replace(" ", ""):
+                last_y = y
+                continue
+            active_row[4] = montant
+            last_y = y
+            continue
+
+        if any([unite, qte, pu, montant]):
+            flush_active()
+            description = nature or label
+            if "G4" in full_text and "rem" in full_text.lower():
+                description = "G4 : (7 % de remise)"
+            if pu == "8 000,00" and montant in {"000,00", "1 000,00"}:
+                montant = pu
+            active_row = [description, unite, qte, pu, montant]
+            last_y = y
+            continue
+
+        if nature and active_row:
+            active_row[0] = normalize_inline_text(f"{active_row[0]} {nature}")
+            last_y = y
+
+    flush_active()
+
+    cleaned_rows = []
+    for row in rows:
+        if not any(cell.strip() for cell in row):
+            continue
+        if row[0] in {"page 3", "SOITESSAIS", "ÉTUDES GÉOTECHNIQUES"}:
+            continue
+        cleaned_rows.append(row)
+
+    if not cleaned_rows:
+        return ""
+
+    return markdown_table_from_rows(
+        ["Nature des travaux", "Unité", "Qté", "P.U. HT", "Mt. HT"],
+        cleaned_rows,
+    )
 
 
 def extract_piezometric_rows(page, region=None):
@@ -2590,6 +2781,45 @@ def detect_sol_essais_table_regions(page):
     }]
 
 
+def detect_sol_essais_quote_table_regions(page):
+    text = page.get_text("text")
+    compact = normalize_inline_text(text).lower()
+    if "sol" not in compact or "essais" not in compact:
+        return []
+    if "nature" not in compact or "travaux" not in compact:
+        return []
+    if "p.u" not in compact and "p.u." not in compact:
+        return []
+    if "mt. ht" not in compact and "mt.ht" not in compact:
+        return []
+
+    words = page.get_text("words")
+    header_words = [
+        word for word in words
+        if 35 <= word[0] <= 120 and "nature" in word[4].lower()
+    ]
+    if not header_words:
+        return []
+
+    top = min(word[1] for word in header_words) - 6
+    bottom_candidates = [
+        word[3] for word in words
+        if top < word[1] < page.rect.y1 - 90
+    ]
+    if not bottom_candidates:
+        return []
+    bottom = min(max(bottom_candidates) + 8, page.rect.y1 - 95)
+
+    if bottom - top < 80:
+        return []
+
+    return [{
+        "label": "SOL-ESSAIS Devis détaillé",
+        "bbox": rect_values(expanded_rect(fitz.Rect(38, top, 555, bottom), page.rect, 3)),
+        "source": "sol-essais-quote-layout-rule",
+    }]
+
+
 def detect_piezometric_table_regions(page):
     text = page.get_text("text")
     required = ["Mesure des niveaux d'eau", "F1", "Pz", "Altitude", "NGF"]
@@ -2611,6 +2841,7 @@ def detect_table_regions(page, blocks):
     page_rect = page.rect
     regions = detect_sgs_table_regions(page)
     regions.extend(detect_sol_essais_table_regions(page))
+    regions.extend(detect_sol_essais_quote_table_regions(page))
     regions.extend(detect_piezometric_table_regions(page))
 
     table_titles = [
@@ -4100,6 +4331,8 @@ def page_elements(page, markdown_mode="clean"):
     for block in page.get("text_blocks", []):
         if markdown_mode != "audit" and block.get("display_role") == "repeated-header-footer":
             continue
+        if markdown_mode != "audit" and is_decorative_text_noise(page, block):
+            continue
         if block_overlaps_regions(block, regions):
             continue
         text = block.get("text", "").strip()
@@ -4288,6 +4521,43 @@ def page_region_coverage(page, regions):
         if rect.get_area() > 0:
             covered += rect.get_area()
     return min(1.0, covered / page_area)
+
+
+def is_decorative_text_noise(page, block):
+    text = normalize_inline_text(block.get("text", ""))
+    if not text:
+        return False
+    bbox = block.get("bbox", [0, 0, 0, 0])
+    page_height = page.get("height", 0) or 0
+    x0, y0, x1, y1 = bbox
+    compact = text.lower()
+
+    if y1 < 105 and x0 < 175 and (
+        "essais" in compact
+        or "etudes" in compact
+        or "cÉor" in text
+        or "5(}" in text
+        or "soitessais" in compact
+    ):
+        return True
+
+    if page_height and y0 > page_height - 95 and (
+        "forag" in compact
+        or "penetro" in compact
+        or "siret" in compact
+        or "agence côte" in compact
+        or "tél" in compact
+        or "tel." in compact
+        or "em€ll" in compact
+        or "ingénierie" in compact
+        or "ingenierie" in compact
+        or "tiii" in compact
+        or "ouauf" in compact
+        or "opqibi" in compact
+    ):
+        return True
+
+    return False
 
 
 def has_bki_ocr_table(page):

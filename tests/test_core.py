@@ -133,6 +133,28 @@ def test_clean_page_elements_hide_full_page_ocr_when_visual_dominates():
     assert [element["type"] for element in elements] == ["visual"]
 
 
+def test_clean_page_elements_hide_decorative_sol_essais_noise():
+    page = {
+        "width": 595,
+        "height": 842,
+        "text_blocks": [
+            {"bbox": [30, 60, 145, 90], "text": "SOITESSAIS\nËruDFs cÉorrcHNrourE"},
+            {"bbox": [45, 120, 250, 145], "text": "Projet de construction"},
+            {"bbox": [50, 770, 550, 815], "text": "FORAGËS - PEiIETROMETRES - SIRET444"},
+        ],
+        "ocr_text": "",
+        "table_crops": [],
+        "visual_crops": [],
+        "embedded_images": [],
+    }
+
+    elements = page_elements(page, markdown_mode="clean")
+
+    assert [element["text"] for element in elements if element["type"] == "text"] == [
+        "Projet de construction"
+    ]
+
+
 def test_clean_markdown_writes_text_without_technical_heading():
     buffer = StringIO()
 
