@@ -7,6 +7,8 @@ from pippo_transcript.core import (
     experimental_graph_analysis,
     extract_business_card_content,
     extract_receipt_content,
+    extract_structured_content,
+    is_bki_document_text,
     markdown_table_from_rows,
     markdown_table_to_html,
     page_elements,
@@ -259,6 +261,33 @@ def test_extract_receipt_content_from_text_without_filename_pattern():
     assert structured["merchant"] == "Totalenergies Relais Nice"
     assert structured["total"] == "60,18 EUR"
     assert "01/05/2026" in structured["detected_dates"]
+
+
+def test_bki_document_is_not_classified_as_receipt():
+    result = {
+        "source": "T1-2026_1z.png",
+        "source_type": "image",
+        "page_count": 1,
+        "pages": [{
+            "native_text": "",
+            "ocr_text": "\n".join([
+                "Büro- und Verwaltungsgebäude",
+                "Kostenkennwerte für die Kosten des Bauwerks",
+                "Kostengruppen 300+400 nach DIN 276",
+                "Baukosteninformationszentrum",
+                "von 1.500€/m2 bis 3.240€/m2",
+            ]),
+        }],
+    }
+
+    assert is_bki_document_text(result["pages"][0]["ocr_text"])
+    assert extract_receipt_content(result) == {}
+    assert extract_structured_content(result) == {}
+
+    assert is_bki_document_text(
+        "LB 008 Wasserhaltungsarbeiten Kostenstand:1.Quartal 2026 "
+        "Nr. Positionen Einheit brutto € netto € © BKI Baukosteninfomationszentrum"
+    )
 
 
 def test_extract_business_card_content():

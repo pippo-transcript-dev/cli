@@ -2035,6 +2035,8 @@ def extract_ocr_visual_regions(page_image_path, ocr_text, out_dir, page_index, o
         return regions
 
     regions.extend(extract_bki_visuals_from_ocr(page_image_path, ocr_text, out_dir, page_index))
+    if not regions and is_bki_document_text(ocr_text):
+        return regions
     if not regions:
         regions.extend(extract_experimental_chart_visual_from_image(
             page_image_path,
@@ -3296,6 +3298,9 @@ def extract_structured_content(result):
     if "Zusammenfassung des Kostenrahmens" in joined and "Kennwertermittlung" in joined:
         return extract_kostenrahmen_content(result)
 
+    if is_bki_document_text(joined):
+        return {}
+
     receipt = extract_receipt_content(result)
     if receipt:
         return receipt
@@ -3313,6 +3318,38 @@ def extract_structured_content(result):
         }
 
     return {}
+
+
+def is_bki_document_text(text):
+    normalized = normalize_inline_text(text).upper()
+    if not normalized:
+        return False
+
+    markers = [
+        "BKI",
+        "BAUKOSTENINFORMATIONSZENTRUM",
+        "BAUKOSTENINFOMATIONSZENTRUM",
+        "KOSTENKENNWERTE",
+        "KOSTEN BAUWERK",
+        "LEISTUNGSBEREICHE",
+        "KOSTEN FÜR LEISTUNGSBEREICHE",
+        "KOSTENGRUPPEN 300+400",
+        "DIN 276",
+        "STLB",
+        "KKW BRI",
+        "KKW BGF",
+        "OBJEKTBEISPIELE",
+    ]
+    hits = sum(1 for marker in markers if marker in normalized)
+    if hits >= 2:
+        return True
+
+    return (
+        "LB " in normalized
+        and "POSITIONEN" in normalized
+        and "KOSTENSTAND" in normalized
+        and ("NETTO" in normalized or "BRUTTO" in normalized)
+    )
 
 
 def title_from_slug(value):
@@ -3469,6 +3506,9 @@ def confidence(value, level="medium"):
 
 
 def extract_receipt_content(result):
+    if is_bki_document_text(document_text(result)):
+        return {}
+
     source = Path(result.get("source", ""))
     stem = source.stem
     parts = stem.split("--")
@@ -3539,6 +3579,9 @@ def guess_receipt_merchant(lines):
 def extract_business_card_content(result):
     lines = normalized_document_lines(result)
     if not lines:
+        return {}
+
+    if is_bki_document_text("\n".join(lines)):
         return {}
 
     source_type = result.get("source_type", "")
