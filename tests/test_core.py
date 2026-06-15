@@ -13,6 +13,7 @@ from pippo_transcript.core import (
     is_bki_document_text,
     is_payroll_document_text,
     markdown_table_from_rows,
+    markdown_table_from_raw_rows,
     markdown_table_to_html,
     page_elements,
     page_text_outside_regions,
@@ -56,6 +57,17 @@ def test_markdown_table_to_html_renders_image_cells():
     rendered = markdown_table_to_html(table)
     assert '<img src="/tmp/photo.png"' in rendered
     assert "Texte" in rendered
+
+
+def test_raw_rows_table_uses_real_header_when_available():
+    table = markdown_table_from_raw_rows([
+        ["Eléments de paie", "", "Base", "Taux", "A déduire", "A payer"],
+        ["Salaire de base", "", "151.67", "26.0032", "", "3 943.90"],
+    ])
+
+    assert "Colonne" not in table
+    assert "| Eléments de paie |" in table
+    assert "Salaire de base" in table
 
 
 def test_page_text_outside_regions_reads_two_columns_column_by_column():

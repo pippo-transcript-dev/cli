@@ -1580,6 +1580,51 @@ def markdown_table_from_rows(headers, rows):
     return "\n".join(md)
 
 
+def table_row_header_score(row):
+    text = " ".join(normalize_inline_text(cell).lower() for cell in row if cell)
+    markers = [
+        "éléments",
+        "elements",
+        "base",
+        "taux",
+        "déduire",
+        "deduire",
+        "payer",
+        "charges",
+        "mensuel",
+        "annuel",
+    ]
+    return sum(1 for marker in markers if marker in text)
+
+
+def markdown_table_from_raw_rows(raw_rows):
+    rows = [
+        [normalize_inline_text(cell) for cell in row]
+        for row in raw_rows
+    ]
+    rows = [row for row in rows if any(cell.strip() for cell in row)]
+    col_count = max((len(row) for row in rows), default=0)
+    if not col_count:
+        return ""
+
+    padded_rows = []
+    for row in rows:
+        values = list(row)
+        values.extend([""] * (col_count - len(values)))
+        padded_rows.append(values[:col_count])
+
+    first_row = padded_rows[0]
+    non_empty = sum(1 for cell in first_row if cell.strip())
+    if non_empty >= 2 or table_row_header_score(first_row) >= 2:
+        headers = first_row
+        body_rows = padded_rows[1:]
+    else:
+        headers = [""] * col_count
+        body_rows = padded_rows
+
+    return markdown_table_from_rows(headers, body_rows)
+
+
 def fahrradstellplaetze_markdown(building):
     rows_by_building = {
         "Platanenstr. 116": [
@@ -2489,19 +2534,9 @@ def extract_markdown_table_from_region(page, region):
         return wohnflaechen_table
 
     if region.get("raw_rows"):
-        rows = [
-            [
-                normalize_inline_text(cell)
-                for cell in row
-            ]
-            for row in region["raw_rows"]
-        ]
-        col_count = max((len(row) for row in rows), default=0)
-        if col_count:
-            return markdown_table_from_rows(
-                [f"Colonne {index}" for index in range(1, col_count + 1)],
-                rows,
-            )
+        markdown_table = markdown_table_from_raw_rows(region["raw_rows"])
+        if markdown_table:
+            return markdown_table
 
     columns = table_columns_for_label(region["label"])
     if not columns:
