@@ -2550,6 +2550,77 @@ def extract_markdown_table_from_region(page, region):
     return "\n".join(md)
 
 
+def is_photo_annex_table(region):
+    rows = region.get("raw_rows") or []
+    if len(rows) < 2:
+        return False
+
+    photo_rows = 0
+    for row in rows:
+        values = list(row or [])
+        if len(values) < 2:
+            continue
+        left = normalize_inline_text(values[0])
+        right = normalize_inline_text(values[1])
+        if not left and right.lower().startswith("photo "):
+            photo_rows += 1
+
+    return photo_rows >= 2
+
+
+def image_rects_in_table_photo_column(page, region):
+    table_rect = rect_from_bbox(region["bbox"])
+    left_limit = table_rect.x0 + table_rect.width * 0.45
+    rects = []
+
+    for image in page.get_images(full=True):
+        xref = image[0]
+        for rect in page.get_image_rects(xref):
+            rect = fitz.Rect(rect)
+            intersection = rect & table_rect
+            if not intersection:
+                continue
+            if intersection.get_area() < rect.get_area() * 0.75:
+                continue
+            if rect.x1 > left_limit:
+                continue
+            if rect.width < 35 or rect.height < 35:
+                continue
+            rects.append(rect)
+
+    return sorted(rects, key=lambda item: (item.y0, item.x0))
+
+
+def extract_photo_annex_markdown_table(page, region, table_dir, page_index, table_index, dpi):
+    if not is_photo_annex_table(region):
+        return ""
+
+    image_rects = image_rects_in_table_photo_column(page, region)
+    if not image_rects:
+        return ""
+
+    rows = []
+    raw_rows = region.get("raw_rows") or []
+    for row_index, raw_row in enumerate(raw_rows, 1):
+        values = list(raw_row or [])
+        description = normalize_inline_text(values[1] if len(values) > 1 else "")
+        image_markdown = ""
+        if row_index <= len(image_rects):
+            photo_path = table_dir / (
+                f"page_{page_index:03d}_table_{table_index:03d}_photo_{row_index:03d}.png"
+            )
+            crop_pdf_region(
+                page,
+                expanded_rect(image_rects[row_index - 1], page.rect, 2),
+                photo_path,
+                dpi,
+            )
+            image_markdown = f"![Photo {row_index}]({photo_path.resolve()})"
+        rows.append([image_markdown, description])
+
+    return markdown_table_from_rows(["Photo", "Description"], rows)
+
+
 def extract_wohnflaechen_table(page, region):
     text = page.get_text("text")
     if "WOHNFLÄCHENAUFSTELLUNG" not in text:
@@ -3039,11 +3110,19 @@ def extract_page_regions(page, page_index, blocks, out_dir, dpi):
         rect = rect_from_bbox(region["bbox"])
         image_path = table_dir / f"page_{page_index:03d}_table_{index:03d}.png"
         crop_pdf_region(page, rect, image_path, dpi)
+        markdown_table = extract_photo_annex_markdown_table(
+            page,
+            region,
+            table_dir,
+            page_index,
+            index,
+            dpi,
+        ) or extract_markdown_table_from_region(page, region)
         table_crops.append({
             **region,
             "page": page_index,
             "image": str(image_path),
-            "markdown_table": extract_markdown_table_from_region(page, region),
+            "markdown_table": markdown_table,
             "data_rows": structured_rows_from_region(page, region),
         })
 
@@ -3840,10 +3919,22 @@ def markdown_table_to_html(markdown_table):
     for row in rows:
         parts.append("<tr>")
         for header in headers:
-            parts.append(f"<td>{html.escape(row.get(header, ''))}</td>")
+            parts.append(f"<td>{markdown_cell_to_html(row.get(header, ''))}</td>")
         parts.append("</tr>")
     parts.append("</tbody></table>")
     return "".join(parts)
+
+
+def markdown_cell_to_html(value):
+    value = value or ""
+    image_match = re.fullmatch(r"!\[(.*?)\]\((.*?)\)", value.strip())
+    if image_match:
+        alt, src = image_match.groups()
+        return (
+            f"<img src=\"{html.escape(src)}\" "
+            f"alt=\"{html.escape(alt)}\" style=\"max-width:220px;height:auto\">"
+        )
+    return html.escape(value)
 
 
 def graph_metrics_to_html(metrics):
@@ -4845,10 +4936,10 @@ def write_page_element_markdown(f, element, markdown_mode="clean"):
             f.write(f"### {title}\n\n")
             if title != visual.get("label") and visual.get("label"):
                 f.write(f"#### {visual['label']}\n\n")
+            write_markdown_visual(f, visual, markdown_mode=markdown_mode)
         else:
-            f.write("### Graphique ou visuel à vérifier\n\n")
-            f.write("Cette zone a été extraite en image pour contrôle visuel.\n\n")
-        write_markdown_visual(f, visual, markdown_mode=markdown_mode)
+            if visual.get("image"):
+                f.write(f"![]({Path(visual['image']).resolve()})\n\n")
         return
 
     if element_type == "image":
@@ -4881,10 +4972,7 @@ def page_element_to_html(element, markdown_mode="clean"):
     if element_type == "visual":
         visual = element.get("payload", {})
         if markdown_mode != "audit":
-            parts = [
-                "<h3>Graphique ou visuel à vérifier</h3>",
-                "<p>Cette zone a été extraite en image pour contrôle visuel.</p>",
-            ]
+            parts = []
             if visual.get("image"):
                 parts.append(
                     f"<div class=\"crop\"><img src=\"{html.escape(str(Path(visual['image']).resolve()))}\" alt=\"{html.escape(visual.get('label', 'Visuel'))}\"></div>"

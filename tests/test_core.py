@@ -51,6 +51,13 @@ def test_markdown_table_to_html():
     assert "2,92" in rendered
 
 
+def test_markdown_table_to_html_renders_image_cells():
+    table = markdown_table_from_rows(["Photo", "Description"], [["![Photo 1](/tmp/photo.png)", "Texte"]])
+    rendered = markdown_table_to_html(table)
+    assert '<img src="/tmp/photo.png"' in rendered
+    assert "Texte" in rendered
+
+
 def test_page_text_outside_regions_reads_two_columns_column_by_column():
     page = {
         "width": 600,
@@ -194,7 +201,7 @@ def test_clean_markdown_keeps_visual_as_crop_without_analysis(tmp_path):
     )
 
     rendered = buffer.getvalue()
-    assert "Graphique ou visuel à vérifier" in rendered
+    assert "Graphique ou visuel à vérifier" not in rendered
     assert "Analyse graphique expérimentale" not in rendered
     assert "Métriques détectées" not in rendered
     assert str(image_path.resolve()) in rendered
