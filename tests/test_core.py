@@ -266,6 +266,26 @@ def test_extract_receipt_content_from_text_without_filename_pattern():
     assert "01/05/2026" in structured["detected_dates"]
 
 
+def test_structured_content_defaults_to_classic_without_receipt_detection():
+    result = {
+        "source": "receipt.jpg",
+        "source_type": "image",
+        "page_count": 1,
+        "pages": [{
+            "native_text": "",
+            "ocr_text": "\n".join([
+                "TOTALENERGIES RELAIS NICE",
+                "Ticket CB",
+                "Date 01/05/2026",
+                "TOTAL TTC 60,18 EUR",
+            ]),
+        }],
+    }
+
+    assert extract_structured_content(result) == {}
+    assert extract_structured_content(result, document_type="auto")["type"] == "receipt"
+
+
 def test_bki_document_is_not_classified_as_receipt():
     result = {
         "source": "T1-2026_1z.png",

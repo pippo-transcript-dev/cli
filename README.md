@@ -34,8 +34,8 @@ Elle rend aussi les pages en images, extrait les images intégrées aux PDF, rep
 - Choix des langues OCR avec `--ocr-langs`.
 - Correction automatique de l'orientation des images avant OCR.
 - Recadrage automatique du document principal dans une photo quand une carte, un reçu ou une page est détectable.
-- Extraction structurée prudente pour les reçus : date, marchand, montant total, montants/dates détectés et confiance.
-- Extraction structurée prudente pour les cartes de visite : nom, société, fonction, email, téléphone, site web, adresse et confiance.
+- Extraction structurée prudente pour les reçus quand `--document-type receipt` est demandé.
+- Extraction structurée prudente pour les cartes de visite quand `--document-type business-card` est demandé.
 - Reconnaissance spécialisée de certains tableaux de type Kostenrahmen.
 - Reconnaissance spécialisée des tableaux de suivi piézométrique avec données JSON structurées.
 - Analyse automatique des courbes piézométriques à partir du tableau de mesures.
@@ -139,6 +139,7 @@ pippo-transcript "document.pdf"
 ```
 
 Par défaut, les sorties sont créées dans `pippo-transcripted-files`.
+Le type de document par défaut est `classic` : le script traite le fichier comme un document normal et ne tente pas de générer un résumé de reçu ou de carte de visite.
 
 Choisir un autre dossier de destination :
 
@@ -176,7 +177,40 @@ Exemple :
 pippo-transcript "../samples/0340-Gesamtkosten" -o "../sortie-pippo-test/0340-Gesamtkosten"
 ```
 
-### 3. Forcer L'OCR
+### 3. Choisir Le Type De Document
+
+Par défaut :
+
+```bash
+pippo-transcript "document.pdf" --document-type classic
+```
+
+Utiliser l'extraction structurée pour un reçu :
+
+```bash
+pippo-transcript "recu.jpg" --document-type receipt
+```
+
+Utiliser l'extraction structurée pour une carte de visite :
+
+```bash
+pippo-transcript "carte-visite.jpg" --document-type business-card
+```
+
+Revenir à l'ancienne détection automatique :
+
+```bash
+pippo-transcript "image.jpg" --document-type auto
+```
+
+Les valeurs possibles sont :
+
+- `classic` : document normal, PDF, rapport, notice, dossier, image scannée ;
+- `receipt` : reçu, ticket, facturette simple ;
+- `business-card` : carte de visite ;
+- `auto` : tente de reconnaître automatiquement reçu/carte, à utiliser seulement si ce comportement est souhaité.
+
+### 4. Forcer L'OCR
 
 Par défaut, `--ocr auto` utilise le texte natif du PDF quand il existe, et lance l'OCR seulement quand le texte manque.
 
@@ -192,7 +226,7 @@ Désactiver l'OCR :
 pippo-transcript ./documents -o ./pippo-transcripted-files --ocr never
 ```
 
-### 4. Choisir Les Langues OCR
+### 5. Choisir Les Langues OCR
 
 Par défaut, `--ocr-langs auto` choisit automatiquement les langues préférées disponibles, dans cet ordre :
 
@@ -230,7 +264,7 @@ Installer une langue manquante :
 pippo-transcript-langs install spa
 ```
 
-### 5. Changer La Qualité Des Images
+### 6. Changer La Qualité Des Images
 
 `--dpi` contrôle la résolution des pages, crops de tableaux et visuels.
 
@@ -240,7 +274,7 @@ pippo-transcript ./documents -o ./pippo-transcripted-files --dpi 200
 
 `160` est plus léger. `200` ou `300` est plus net, mais les fichiers sont plus lourds.
 
-### 6. Inclure Les Coordonnées Des Blocs Texte
+### 7. Inclure Les Coordonnées Des Blocs Texte
 
 ```bash
 pippo-transcript ./documents -o ./pippo-transcripted-files --include-blocks
@@ -248,7 +282,7 @@ pippo-transcript ./documents -o ./pippo-transcripted-files --include-blocks
 
 Cette option ajoute les blocs texte et leurs coordonnées dans le Markdown. Elle est utile pour déboguer une page, mais elle rend le Markdown plus long.
 
-### 7. Choisir Le Mode Markdown
+### 8. Choisir Le Mode Markdown
 
 Par défaut, le Markdown est en mode propre :
 
@@ -266,7 +300,7 @@ pippo-transcript ./documents -o ./pippo-transcripted-files --markdown-mode audit
 
 Le mode `audit` affiche davantage d'éléments bruts dans le Markdown, utile pour comprendre pourquoi un PDF contient beaucoup d'objets internes.
 
-### 8. Reprendre Un Gros Dossier
+### 9. Reprendre Un Gros Dossier
 
 Pour éviter de retraiter les fichiers déjà transcrits :
 
@@ -345,7 +379,8 @@ Le fichier `.json` contient les mêmes informations sous forme exploitable :
 - `pages[].elements[].type` : `text`, `table`, `visual` ou `image` ;
 - `pages[].elements[].bbox` : position de l'élément sur la page ;
 - `pages[].elements[].confidence` : confiance indicative de l'élément ;
-- `structured` : données métier reconnues, par exemple `receipt`, `business_card`, `kostenrahmen` ou `piezometric`.
+- `document_type` : mode demandé, par exemple `classic`, `receipt`, `business-card` ou `auto` ;
+- `structured` : données métier reconnues, par exemple `receipt`, `business_card`, `kostenrahmen` ou `piezometric`. En mode `classic`, les reçus et cartes de visite ne sont pas détectés automatiquement.
 
 Pour les suivis piézométriques reconnus, `structured` contient aussi :
 
@@ -385,7 +420,7 @@ Le fichier `.txt` contient le texte brut page par page.
 - Tous les tableaux PDF ne sont pas encore convertis parfaitement cellule par cellule.
 - Les graphiques sont conservés comme images/crops à vérifier dans le Markdown propre. L'analyse automatique reste expérimentale et n'est pas affichée par défaut.
 - L'analyse graphique niveau 2 est expérimentale : elle détecte zone graphique, couleurs/séries probables, axes/grilles, type probable, valeurs OCR contextualisées, lignes OCR regroupées par position, blocs dashboard probables et certaines matrices/heatmaps. En mode `clean`, ces détails sont masqués pour éviter de présenter une interprétation fragile comme une transcription fidèle. En mode `audit`, les détails techniques restent visibles. Les matrices issues de petits chiffres OCR restent à vérifier visuellement. Cela ne remplace pas encore une lecture métier complète ni une reconstruction géométrique exacte de chaque courbe/barre.
-- Les champs de reçus et cartes de visite sont prudents : ils peuvent rester vides ou être marqués avec une confiance moyenne quand les indices sont ambigus.
+- Les champs de reçus et cartes de visite sont prudents : ils peuvent rester vides ou être marqués avec une confiance moyenne quand les indices sont ambigus. Ils ne sont produits que si `--document-type receipt`, `--document-type business-card` ou `--document-type auto` est utilisé.
 - L'ordre multi-colonnes est heuristique et peut nécessiter un contrôle sur des mises en page éditoriales complexes.
 - Pour obtenir une extraction parfaite sur un nouveau modèle de document, il faut parfois ajouter une règle spécialisée.
 

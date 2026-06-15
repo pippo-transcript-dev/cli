@@ -119,6 +119,15 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--document-type",
+        choices=["classic", "receipt", "business-card", "auto"],
+        default="classic",
+        help=(
+            "Type métier à extraire. classic = document normal sans résumé reçu/carte; "
+            "receipt = reçu; business-card = carte de visite; auto = ancienne détection automatique."
+        ),
+    )
+    parser.add_argument(
         "--include-blocks",
         action="store_true",
         help="Ajoute les blocs texte avec coordonnées dans le Markdown.",
@@ -256,6 +265,7 @@ def main():
                 dpi=args.dpi,
                 ocr_mode=args.ocr,
                 ocr_langs=args.ocr_langs,
+                document_type=args.document_type,
                 include_blocks=args.include_blocks,
                 clean=not args.no_clean,
                 markdown_mode=args.markdown_mode,

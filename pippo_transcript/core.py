@@ -3157,7 +3157,26 @@ def extract_embedded_images(doc, embedded_dir):
     return annotate_embedded_images(extracted)
 
 
-def transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs="auto"):
+def apply_structured_extraction(result, document_type="classic"):
+    result["document_type"] = document_type
+
+    if document_type == "classic":
+        result["structured"] = extract_structured_content(result, document_type="classic")
+    elif document_type == "receipt":
+        result["structured"] = extract_receipt_content(result)
+    elif document_type == "business-card":
+        result["structured"] = extract_business_card_content(result)
+    elif document_type == "auto":
+        result["structured"] = extract_structured_content(result, document_type="auto")
+    else:
+        raise ValueError(
+            "Type de document non supporté. Utilise classic, receipt, business-card ou auto."
+        )
+
+    return result
+
+
+def transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs="auto", document_type="classic"):
     pages_dir = out_dir / "pages"
     embedded_dir = out_dir / "embedded_images"
     table_dir = out_dir / "table_crops"
@@ -3242,12 +3261,12 @@ def transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs="auto"):
     }
     annotate_repeated_text_blocks(result)
     enrich_piezometric_visual_analyses(result)
-    result["structured"] = extract_structured_content(result)
+    apply_structured_extraction(result, document_type=document_type)
     annotate_page_elements(result)
     return result
 
 
-def transcribe_image(input_path, out_dir, ocr_mode, ocr_langs="auto"):
+def transcribe_image(input_path, out_dir, ocr_mode, ocr_langs="auto", document_type="classic"):
     pages_dir = out_dir / "pages"
     pages_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3294,7 +3313,7 @@ def transcribe_image(input_path, out_dir, ocr_mode, ocr_langs="auto"):
         "visual_crops": visual_crops,
         "structured": {},
     }
-    result["structured"] = extract_structured_content(result)
+    apply_structured_extraction(result, document_type=document_type)
     annotate_page_elements(result)
     return result
 
@@ -3353,7 +3372,7 @@ def extract_kostenrahmen_content(result):
     }
 
 
-def extract_structured_content(result):
+def extract_structured_content(result, document_type="classic"):
     joined = "\n".join(
         page["native_text"] or page["ocr_text"]
         for page in result["pages"]
@@ -3363,6 +3382,17 @@ def extract_structured_content(result):
         return extract_kostenrahmen_content(result)
 
     if is_bki_document_text(joined):
+        return {}
+
+    if document_type == "classic":
+        piezometric_rows = collect_piezometric_measurements(result)
+        if piezometric_rows:
+            return {
+                "type": "piezometric",
+                "measurements": piezometric_rows,
+                "summary": piezometric_summary(piezometric_rows),
+            }
+
         return {}
 
     receipt = extract_receipt_content(result)
@@ -5042,6 +5072,7 @@ def transcribe_path(
     dpi=200,
     ocr_mode="auto",
     ocr_langs="auto",
+    document_type="classic",
     include_blocks=False,
     clean=True,
     markdown_mode="clean",
@@ -5063,9 +5094,22 @@ def transcribe_path(
     suffix = input_path.suffix.lower()
 
     if suffix == PDF_EXTENSION:
-        result = transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs=ocr_langs)
+        result = transcribe_pdf(
+            input_path,
+            out_dir,
+            dpi,
+            ocr_mode,
+            ocr_langs=ocr_langs,
+            document_type=document_type,
+        )
     elif suffix in IMAGE_EXTENSIONS:
-        result = transcribe_image(input_path, out_dir, ocr_mode, ocr_langs=ocr_langs)
+        result = transcribe_image(
+            input_path,
+            out_dir,
+            ocr_mode,
+            ocr_langs=ocr_langs,
+            document_type=document_type,
+        )
     else:
         raise ValueError(f"Format non supporté : {input_path.suffix}")
 
@@ -5110,6 +5154,15 @@ def main():
         help="Langues Tesseract, ex. fra+eng, fra+ita+eng, spa+eng. auto choisit les langues installées préférées.",
     )
     parser.add_argument(
+        "--document-type",
+        choices=["classic", "receipt", "business-card", "auto"],
+        default="classic",
+        help=(
+            "Type métier à extraire. classic = document normal sans résumé reçu/carte; "
+            "receipt = reçu; business-card = carte de visite; auto = ancienne détection automatique."
+        ),
+    )
+    parser.add_argument(
         "--include-blocks",
         action="store_true",
         help="Inclut les blocs texte avec coordonnées dans le Markdown.",
@@ -5131,6 +5184,7 @@ def main():
         dpi=args.dpi,
         ocr_mode=args.ocr,
         ocr_langs=args.ocr_langs,
+        document_type=args.document_type,
         include_blocks=args.include_blocks,
         markdown_mode=args.markdown_mode,
     )
