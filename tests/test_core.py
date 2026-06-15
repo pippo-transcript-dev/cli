@@ -70,6 +70,51 @@ def test_raw_rows_table_uses_real_header_when_available():
     assert "Salaire de base" in table
 
 
+def test_raw_rows_layout_text_is_not_rendered_as_table():
+    table = markdown_table_from_raw_rows([
+        ["On constate de plus que pour la quasi-majorité des organisations proposant des services", "", "", ""],
+        ["en lien avec la blockchain, la formalisation de processus est absente.", "", "", ""],
+        ["Cette phrase continue sur une autre ligne du paragraphe.", "", "", ""],
+    ])
+
+    assert table == ""
+
+
+def test_raw_rows_key_value_table_without_header_is_kept():
+    table = markdown_table_from_raw_rows([
+        ["TRI (IRR)", "Taux de Rendement Interne sur les flux."],
+        ["Cash-on-Cash", "Cash-flow net de l’année 1 ÷ cash investi initial."],
+        ["MOIC", "Multiple On Invested Capital."],
+    ])
+
+    assert table.splitlines()[0] == "|  |  |"
+    assert "TRI (IRR)" in table
+    assert "Cash-on-Cash" in table
+
+
+def test_clean_page_elements_hide_layout_tables_and_keep_text():
+    page = {
+        "width": 600,
+        "height": 800,
+        "text_blocks": [
+            {"bbox": [50, 100, 550, 140], "text": "Paragraphe normal à conserver."},
+        ],
+        "table_crops": [{
+            "bbox": [45, 95, 555, 145],
+            "label": "Table PyMuPDF 1",
+            "image": "layout.png",
+            "display_role": "layout",
+        }],
+        "visual_crops": [],
+        "embedded_images": [],
+    }
+
+    elements = page_elements(page)
+
+    assert [element["type"] for element in elements] == ["text"]
+    assert elements[0]["text"] == "Paragraphe normal à conserver."
+
+
 def test_page_text_outside_regions_reads_two_columns_column_by_column():
     page = {
         "width": 600,

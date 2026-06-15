@@ -1597,12 +1597,114 @@ def table_row_header_score(row):
     return sum(1 for marker in markers if marker in text)
 
 
+def raw_rows_table_metrics(rows):
+    row_count = len(rows)
+    col_count = max((len(row) for row in rows), default=0)
+    total_cells = row_count * col_count
+    non_empty_cells = 0
+    multi_cell_rows = 0
+    long_single_cell_rows = 0
+
+    for row in rows:
+        values = list(row)
+        values.extend([""] * (col_count - len(values)))
+        normalized = [normalize_inline_text(cell) for cell in values[:col_count]]
+        non_empty = [cell for cell in normalized if cell]
+        non_empty_cells += len(non_empty)
+        if len(non_empty) >= 2:
+            multi_cell_rows += 1
+        if len(non_empty) == 1 and len(non_empty[0]) >= 70:
+            long_single_cell_rows += 1
+
+    return {
+        "row_count": row_count,
+        "col_count": col_count,
+        "total_cells": total_cells,
+        "non_empty_cells": non_empty_cells,
+        "multi_cell_rows": multi_cell_rows,
+        "long_single_cell_rows": long_single_cell_rows,
+    }
+
+
+def raw_rows_look_like_layout_text(rows):
+    normalized_rows = [
+        [normalize_inline_text(cell) for cell in row]
+        for row in rows
+        if any(normalize_inline_text(cell) for cell in row)
+    ]
+    if len(normalized_rows) < 2:
+        return False
+
+    metrics = raw_rows_table_metrics(normalized_rows)
+    row_count = metrics["row_count"]
+    col_count = metrics["col_count"]
+    if col_count < 2:
+        return False
+
+    first_row = normalized_rows[0]
+    if table_row_header_score(first_row) >= 2:
+        return False
+
+    non_empty_ratio = metrics["non_empty_cells"] / max(1, metrics["total_cells"])
+    multi_cell_ratio = metrics["multi_cell_rows"] / max(1, row_count)
+    long_single_ratio = metrics["long_single_cell_rows"] / max(1, row_count)
+
+    if col_count >= 3 and non_empty_ratio < 0.38 and multi_cell_ratio < 0.35:
+        return True
+
+    if col_count == 2 and multi_cell_ratio < 0.30 and long_single_ratio > 0.45:
+        return True
+
+    return False
+
+
+def row_looks_like_table_header(row, body_rows):
+    normalized = [normalize_inline_text(cell) for cell in row]
+    non_empty = [cell for cell in normalized if cell]
+    if len(non_empty) < 2:
+        return False
+
+    col_count = len(normalized)
+    if col_count == 2 and len(non_empty[1]) > 45:
+        return False
+
+    if table_row_header_score(normalized) >= 2:
+        return True
+
+    average_len = sum(len(cell) for cell in non_empty) / max(1, len(non_empty))
+    has_amount_or_date = any(
+        re.search(r"\d{1,3}(?:[ .]\d{3})*[,.]\d{2}|€|%|\b\d{1,2}/\d{1,2}/\d{2,4}\b", cell)
+        for cell in non_empty
+    )
+    if average_len > 28 or has_amount_or_date:
+        return False
+
+    if col_count >= 3:
+        return True
+
+    # Two-column tables often need a header only when the following rows look
+    # like label/value data, not like a glossary where the first row is data.
+    for body_row in body_rows[:4]:
+        values = list(body_row)
+        values.extend([""] * (col_count - len(values)))
+        if len(values) >= 2 and re.search(
+            r"\d{1,3}(?:[ .]\d{3})*[,.]\d{2}|€|%|\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+            values[1],
+        ):
+            return True
+
+    return False
+
+
 def markdown_table_from_raw_rows(raw_rows):
     rows = [
         [normalize_inline_text(cell) for cell in row]
         for row in raw_rows
     ]
     rows = [row for row in rows if any(cell.strip() for cell in row)]
+    if raw_rows_look_like_layout_text(rows):
+        return ""
+
     col_count = max((len(row) for row in rows), default=0)
     if not col_count:
         return ""
@@ -1614,8 +1716,7 @@ def markdown_table_from_raw_rows(raw_rows):
         padded_rows.append(values[:col_count])
 
     first_row = padded_rows[0]
-    non_empty = sum(1 for cell in first_row if cell.strip())
-    if non_empty >= 2 or table_row_header_score(first_row) >= 2:
+    if row_looks_like_table_header(first_row, padded_rows[1:]):
         headers = first_row
         body_rows = padded_rows[1:]
     else:
@@ -3153,12 +3254,16 @@ def extract_page_regions(page, page_index, blocks, out_dir, dpi):
             index,
             dpi,
         ) or extract_markdown_table_from_region(page, region)
+        display_role = ""
+        if region.get("source") == "pymupdf-find_tables" and region.get("raw_rows") and not markdown_table:
+            display_role = "layout"
         table_crops.append({
             **region,
             "page": page_index,
             "image": str(image_path),
             "markdown_table": markdown_table,
             "data_rows": structured_rows_from_region(page, region),
+            **({"display_role": display_role} if display_role else {}),
         })
 
     visual_crops = []
@@ -4282,6 +4387,8 @@ def block_overlaps_regions(block, regions):
         return False
 
     for region in regions:
+        if region.get("display_role") == "layout":
+            continue
         region_rect = rect_from_bbox(region["bbox"])
         intersection = block_rect & region_rect
         if intersection and intersection.get_area() > 0.55 * block_rect.get_area():
@@ -4615,7 +4722,11 @@ def sort_page_elements(elements, page, text_blocks):
 
 
 def page_elements(page, markdown_mode="clean"):
-    regions = page.get("table_crops", []) + page.get("visual_crops", [])
+    visible_tables = [
+        table for table in page.get("table_crops", [])
+        if markdown_mode == "audit" or table.get("display_role") != "layout"
+    ]
+    regions = visible_tables + page.get("visual_crops", [])
     elements = []
     text_blocks = []
 
@@ -4638,7 +4749,7 @@ def page_elements(page, markdown_mode="clean"):
             "confidence": "high",
         })
 
-    for table in page.get("table_crops", []):
+    for table in visible_tables:
         elements.append({
             "type": "table",
             "bbox": table.get("bbox", []),
@@ -4661,7 +4772,11 @@ def page_elements(page, markdown_mode="clean"):
     for image in embedded_images_for_markdown(page, markdown_mode=markdown_mode):
         if not image.get("bbox"):
             continue
-        if region_overlaps_regions(image, page.get("table_crops", []) + page.get("visual_crops", []), threshold=0.35):
+        image_regions = [
+            table for table in page.get("table_crops", [])
+            if markdown_mode == "audit" or table.get("display_role") != "layout"
+        ] + page.get("visual_crops", [])
+        if region_overlaps_regions(image, image_regions, threshold=0.35):
             continue
         elements.append({
             "type": "image",
