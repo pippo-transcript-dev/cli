@@ -1969,6 +1969,52 @@ def extract_experimental_chart_visual_from_image(page_image_path, ocr_text, out_
     }]
 
 
+def filter_redundant_experimental_visuals(page_width, page_height, table_crops, visual_crops):
+    if not table_crops or not visual_crops:
+        return visual_crops
+
+    page_area = max(1.0, float(page_width or 0) * float(page_height or 0))
+    table_rects = [
+        rect_from_bbox(table.get("bbox", []))
+        for table in table_crops
+        if table.get("bbox")
+    ]
+    if not table_rects:
+        return visual_crops
+
+    kept = []
+    for visual in visual_crops:
+        if visual.get("source") != "experimental-graph-image":
+            kept.append(visual)
+            continue
+
+        bbox = visual.get("bbox") or []
+        if len(bbox) != 4:
+            kept.append(visual)
+            continue
+
+        visual_rect = rect_from_bbox(bbox)
+        visual_area = visual_rect.get_area()
+        if visual_area <= 0:
+            kept.append(visual)
+            continue
+
+        overlap_area = 0.0
+        for table_rect in table_rects:
+            intersection = visual_rect & table_rect
+            if intersection:
+                overlap_area += intersection.get_area()
+
+        is_large_visual = visual_area > page_area * 0.45
+        is_already_table = overlap_area > min(visual_area, page_area) * 0.18
+        if is_large_visual and is_already_table:
+            continue
+
+        kept.append(visual)
+
+    return kept
+
+
 def extract_fahrradstellplaetze_tables_from_ocr(page_image_path, ocr_text, out_dir, page_index):
     normalized = ocr_text.lower()
     if "fahrradstell" not in normalized:
@@ -3162,6 +3208,12 @@ def transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs="auto"):
                 ocr_langs=ocr_langs,
             )
         )
+        visual_crops = filter_redundant_experimental_visuals(
+            page.rect.width,
+            page.rect.height,
+            table_crops,
+            visual_crops,
+        )
 
         pages.append({
             "page": page_index,
@@ -3364,6 +3416,28 @@ def is_bki_document_text(text):
     )
 
 
+def is_payroll_document_text(text):
+    normalized = normalize_inline_text(text).upper()
+    if not normalized:
+        return False
+
+    markers = [
+        "BULLETIN",
+        "BULLETIN DE PAIE",
+        "SALAIRE DE BASE",
+        "SALAIRE BRUT",
+        "NET À PAYER",
+        "NET A PAYER",
+        "MONTANT NET SOCIAL",
+        "CHARGES PATRONALES",
+        "COTISATIONS",
+        "CONGÉS PAYÉS",
+        "CONGES PAYES",
+    ]
+    hits = sum(1 for marker in markers if marker in normalized)
+    return hits >= 3
+
+
 def title_from_slug(value):
     value = value.replace("_", " ").replace("-", " ")
     value = re.sub(r"\s+", " ", value).strip()
@@ -3519,6 +3593,8 @@ def confidence(value, level="medium"):
 
 def extract_receipt_content(result):
     if is_bki_document_text(document_text(result)):
+        return {}
+    if is_payroll_document_text(document_text(result)):
         return {}
 
     source = Path(result.get("source", ""))

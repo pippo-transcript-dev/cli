@@ -8,8 +8,10 @@ from pippo_transcript.core import (
     extract_business_card_content,
     extract_receipt_content,
     extract_structured_content,
+    filter_redundant_experimental_visuals,
     bki_markdown_table_from_ocr,
     is_bki_document_text,
+    is_payroll_document_text,
     markdown_table_from_rows,
     markdown_table_to_html,
     page_elements,
@@ -307,6 +309,42 @@ def test_long_classic_document_is_not_classified_as_receipt():
     }
 
     assert extract_receipt_content(result) == {}
+
+
+def test_payroll_document_is_not_classified_as_receipt():
+    result = {
+        "source": "payroll.pdf",
+        "source_type": "pdf",
+        "page_count": 1,
+        "pages": [{
+            "ocr_text": "\n".join([
+                "BULLETIN##12-2024##00002##CELI##FILIPPO MARIA",
+                "Salaire de base",
+                "Salaire brut",
+                "Montant net social",
+                "Net à payer avant impôt sur le revenu",
+                "Charges patronales",
+                "Total des cotisations et contributions",
+                "Net payé 6 137,91 euros",
+            ])
+        }],
+    }
+
+    text = result["pages"][0]["ocr_text"]
+    assert is_payroll_document_text(text)
+    assert extract_receipt_content(result) == {}
+
+
+def test_filter_redundant_experimental_visual_when_table_covers_page():
+    visuals = [{
+        "source": "experimental-graph-image",
+        "bbox": [0, 0, 1000, 1000],
+    }]
+    tables = [{
+        "bbox": [100, 100, 900, 900],
+    }]
+
+    assert filter_redundant_experimental_visuals(1000, 1000, tables, visuals) == []
 
 
 def test_bki_gebaeudeart_table_preserves_percent_column():
