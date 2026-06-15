@@ -178,20 +178,28 @@ def write_index(out_root, results):
     index_path = out_root / "index.html"
     rows = []
     for result in results:
-        counts = count_json_items(result["json"])
+        counts = count_json_items(result["json"]) if result.get("json") else {}
         source = html.escape(str(result["source"]))
+        status = html.escape(result.get("status", "ok"))
+        error = html.escape(result.get("error", ""))
+        html_link = f"<a href=\"{rel_link(result['html'], out_root)}\">HTML</a>" if result.get("html") else ""
+        md_link = f"<a href=\"{rel_link(result['markdown'], out_root)}\">MD</a>" if result.get("markdown") else ""
+        json_link = f"<a href=\"{rel_link(result['json'], out_root)}\">JSON</a>" if result.get("json") else ""
+        text_link = f"<a href=\"{rel_link(result['text'], out_root)}\">TXT</a>" if result.get("text") else ""
         rows.append(
             "<tr>"
             f"<td>{source}</td>"
+            f"<td>{status}</td>"
+            f"<td>{error}</td>"
             f"<td>{counts.get('pages', '')}</td>"
             f"<td>{counts.get('tables', '')}</td>"
             f"<td>{counts.get('visuals', '')}</td>"
             f"<td>{counts.get('hidden_images', '')}</td>"
             f"<td>{html.escape(counts.get('structured', ''))}</td>"
-            f"<td><a href=\"{rel_link(result['html'], out_root)}\">HTML</a></td>"
-            f"<td><a href=\"{rel_link(result['markdown'], out_root)}\">MD</a></td>"
-            f"<td><a href=\"{rel_link(result['json'], out_root)}\">JSON</a></td>"
-            f"<td><a href=\"{rel_link(result['text'], out_root)}\">TXT</a></td>"
+            f"<td>{html_link}</td>"
+            f"<td>{md_link}</td>"
+            f"<td>{json_link}</td>"
+            f"<td>{text_link}</td>"
             "</tr>"
         )
 
@@ -212,7 +220,7 @@ def write_index(out_root, results):
   <h1>Pippo Transcript - Index</h1>
   <p>{len(results)} document(s) traité(s).</p>
   <table>
-    <thead><tr><th>Source</th><th>Pages</th><th>Tableaux</th><th>Visuels</th><th>Images masquées</th><th>Structuré</th><th>HTML</th><th>MD</th><th>JSON</th><th>TXT</th></tr></thead>
+    <thead><tr><th>Source</th><th>Statut</th><th>Erreur</th><th>Pages</th><th>Tableaux</th><th>Visuels</th><th>Images masquées</th><th>Structuré</th><th>HTML</th><th>MD</th><th>JSON</th><th>TXT</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
 </main></body></html>
@@ -259,6 +267,8 @@ def main():
 
         print(f"[{index}/{len(files)}] {file_path} -> {target_dir}")
         try:
+            if file_path.stat().st_size == 0:
+                raise ValueError("Fichier vide.")
             result = transcribe_path(
                 file_path,
                 target_dir,
@@ -270,12 +280,25 @@ def main():
                 clean=not args.no_clean,
                 markdown_mode=args.markdown_mode,
             )
-        except ValueError as exc:
+        except Exception as exc:
             print(f"Erreur: {exc}", file=sys.stderr)
-            raise SystemExit(2) from None
+            if input_path.is_file():
+                raise SystemExit(2) from None
+            results.append({
+                "source": file_path,
+                "out_dir": target_dir,
+                "json": None,
+                "markdown": None,
+                "text": None,
+                "html": None,
+                "status": "error",
+                "error": str(exc),
+            })
+            continue
         print(f"  Markdown: {result['markdown']}")
         print(f"  HTML: {result['html']}")
         print(f"  JSON: {result['json']}")
+        result["status"] = "ok"
         results.append(result)
 
     if input_path.is_dir():

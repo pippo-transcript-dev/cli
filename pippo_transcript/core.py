@@ -3437,15 +3437,16 @@ def transcribe_pdf(input_path, out_dir, dpi, ocr_mode, ocr_langs="auto", documen
         table_crops.extend(
             extract_ocr_page_regions(page_image_path, ocr_text, out_dir, page_index)
         )
-        visual_crops.extend(
-            extract_ocr_visual_regions(
-                page_image_path,
-                ocr_text or native_text,
-                out_dir,
-                page_index,
-                ocr_langs=ocr_langs,
+        if ocr_text:
+            visual_crops.extend(
+                extract_ocr_visual_regions(
+                    page_image_path,
+                    ocr_text,
+                    out_dir,
+                    page_index,
+                    ocr_langs=ocr_langs,
+                )
             )
-        )
         visual_crops = filter_redundant_experimental_visuals(
             page.rect.width,
             page.rect.height,
