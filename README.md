@@ -21,7 +21,7 @@ Elle rend aussi les pages en images, extrait les images intégrées aux PDF, rep
 - Analyse graphique expérimentale disponible dans le JSON et le mode `audit`, mais masquée du Markdown propre quand elle n'est pas suffisamment fiable.
 - Correction fuzzy de libellés OCR et validation géométrique de certains graphiques à barres quand l'option `vision` est installée.
 - Pour les donuts/camemberts, le script conserve le crop du graphique pour analyse humaine, sans inventer de tableau de segments.
-- Mode Markdown lisible ou audit avec `--markdown-mode clean|audit`.
+- Mode Markdown lisible, audit ou BKI avec `--markdown-mode clean|audit|bki-tables`.
 - Classification des images intégrées : image utile, logo/icône, doublon, micro-image ou tuile PDF.
 - Masquage automatique des tuiles techniques dans le Markdown propre.
 - Masquage automatique des headers/footers répétés dans le Markdown propre.
@@ -36,6 +36,7 @@ Elle rend aussi les pages en images, extrait les images intégrées aux PDF, rep
 - Recadrage automatique du document principal dans une photo quand une carte, un reçu ou une page est détectable.
 - Extraction structurée prudente pour les reçus quand `--document-type receipt` est demandé.
 - Extraction structurée prudente pour les cartes de visite quand `--document-type business-card` est demandé.
+- Pour les images scannées ou photographiées, le Markdown conserve le crop visuel et la transcription OCR quand elle existe.
 - Reconnaissance spécialisée de certains tableaux de type Kostenrahmen.
 - Reconnaissance spécialisée des tableaux de suivi piézométrique avec données JSON structurées.
 - Analyse automatique des courbes piézométriques à partir du tableau de mesures.
@@ -114,6 +115,15 @@ Vérifier que la commande est disponible :
 pippo-transcript --help
 ```
 
+Lancer l'interface locale :
+
+```bash
+pippo-transcript-gui
+```
+
+Elle permet de choisir un fichier ou un dossier, de régler les paramètres principaux,
+de lancer la transcription et d'ouvrir le dossier de sortie ou le rapport HTML.
+
 ## Statut Alpha
 
 Le projet est publiable comme alpha, pas comme moteur de production garanti.
@@ -129,6 +139,22 @@ Le projet est publiable comme alpha, pas comme moteur de production garanti.
 Pour comprendre les détails de qualité : voir `QUALITY.md`.
 
 ## Comment Faire
+
+### 0. Utiliser L'Interface Locale
+
+Depuis le dossier du projet, après installation :
+
+```bash
+pippo-transcript-gui
+```
+
+Ou sans installer le script console :
+
+```bash
+python -m pippo_transcript.gui
+```
+
+Dans la fenêtre, choisis le fichier ou dossier à traiter, le dossier de sortie, puis les options OCR, langues, type de document, DPI et mode Markdown. Le journal affiche l'exécution en direct.
 
 ### 1. Transcrire Un Fichier
 
@@ -300,6 +326,15 @@ pippo-transcript ./documents -o ./pippo-transcripted-files --markdown-mode audit
 
 Le mode `audit` affiche davantage d'éléments bruts dans le Markdown, utile pour comprendre pourquoi un PDF contient beaucoup d'objets internes.
 
+Le mode `bki-tables` est destiné aux documents BKI et assimilés :
+
+```bash
+pippo-transcript ./documents-bki -o ./sortie-bki --markdown-mode bki-tables
+```
+
+Il active des reconstructions spécialisées et évite certains labels, séparateurs ou crops redondants dans le Markdown.
+L'ancien nom `bki` reste accepté comme alias pour compatibilité.
+
 ### 9. Reprendre Un Gros Dossier
 
 Pour éviter de retraiter les fichiers déjà transcrits :
@@ -339,7 +374,7 @@ Le fichier `.md` contient, page par page :
 - les tableaux détectés, avec une table Markdown quand elle est reconstructible ;
 - le crop image du tableau comme référence visuelle ;
 - les graphiques/visuels détectés ;
-- une analyse textuelle quand le graphique peut être relié à un tableau ;
+- le crop des graphiques quand l'analyse automatique n'est pas assez fiable ;
 - le texte hors zones déjà interprétées, reformé en paragraphes lisibles.
 
 Le Markdown privilégie la lecture : les lignes PDF/OCR coupées au milieu d'une phrase sont recollées, et les cellules de tableau multi-lignes sont écrites sur une seule ligne. Le texte brut reste disponible dans le `.json` et le `.txt`.
@@ -355,7 +390,7 @@ Chaque document reçoit aussi un fichier `.html` autonome :
 - image complète de chaque page ;
 - tableaux en HTML natif ;
 - crops de tableaux et graphiques ;
-- analyses textuelles ;
+- données et analyses fiables quand elles existent ;
 - texte reconstitué.
 
 Quand l'entrée est un dossier, `index.html` liste tous les documents traités avec les liens vers HTML, Markdown, JSON et TXT.
@@ -410,7 +445,7 @@ Le fichier `.txt` contient le texte brut page par page.
 - Ne pas perdre les tableaux et graphiques : ils sont au minimum présents comme crops.
 - Reconstruire certains tableaux réguliers en Markdown.
 - Reconstituer certains tableaux scannés fréquents quand la page ne contient qu'une image.
-- Relier certains graphiques aux tableaux proches pour produire une analyse simple.
+- Relier certains graphiques aux tableaux proches pour produire une analyse simple quand le lien est fiable.
 - Produire des données structurées pour certains tableaux métier, par exemple les mesures piézométriques.
 - Produire un rapport HTML consultable directement.
 - Proposer une lecture graphique niveau 2 expérimentale dans le JSON et le mode audit : crops de chaque KPI/panneau/graphique, matrices/heatmaps OCR quand elles sont détectables, type probable, indices visuels, métriques OCR structurées et lignes OCR spatiales.
@@ -447,6 +482,30 @@ Lancer les tests :
 ```bash
 pytest tests -q
 ```
+
+## Publier Sur GitHub
+
+Avant de pousser le dépôt en public :
+
+```bash
+python -m py_compile pippo_transcript/core.py pippo_transcript/cli.py pippo_transcript/langs.py
+pytest tests -q
+pippo-transcript --help
+pippo-transcript-langs --help
+```
+
+À vérifier aussi :
+
+- ne pas committer de documents privés, reçus, factures, contrats, dossiers clients ou sorties générées ;
+- garder seulement des exemples synthétiques ou anonymisés dans `examples/` ;
+- vérifier que `.gitignore` exclut les caches Python, environnements virtuels et dossiers de sortie ;
+- annoncer clairement le statut `alpha` dans la description GitHub ;
+- éviter les promesses de perfection : parler de transcription locale vérifiable, pas d'OCR ou de compréhension documentaire garantie ;
+- ajouter plus tard des fixtures publiques miniatures si tu veux démontrer les tableaux, les reçus et les graphiques sans données privées.
+
+Description courte recommandée pour GitHub :
+
+> Alpha toolkit for local PDF/image transcription with reviewable Markdown, JSON, HTML and visual crops.
 
 ## Développement
 

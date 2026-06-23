@@ -134,9 +134,13 @@ def parse_args():
     )
     parser.add_argument(
         "--markdown-mode",
-        choices=["clean", "audit"],
+        choices=["clean", "audit", "bki-tables", "bki"],
         default="clean",
-        help="clean = Markdown lisible; audit = affiche aussi éléments bruts/techniques.",
+        help=(
+            "clean = Markdown lisible; audit = affiche aussi éléments bruts/techniques; "
+            "bki-tables = transcription optimisée pour les tableaux BKI. "
+            "bki reste accepté comme alias."
+        ),
     )
     parser.add_argument(
         "--no-clean",
@@ -229,10 +233,23 @@ def write_index(out_root, results):
     return index_path
 
 
-def main():
-    args = parse_args()
-    input_path = args.input
-    out_root = args.out
+def run_transcription(
+    input_path,
+    out_root=Path("pippo-transcripted-files"),
+    dpi=200,
+    ocr_mode="auto",
+    ocr_langs="auto",
+    document_type="classic",
+    include_blocks=False,
+    markdown_mode="clean",
+    clean=True,
+    skip_existing=False,
+    log=print,
+    error_log=None,
+):
+    input_path = Path(input_path)
+    out_root = Path(out_root)
+    error_log = error_log or log
 
     if not input_path.exists():
         raise FileNotFoundError(input_path)
@@ -246,11 +263,11 @@ def main():
         files = list(iter_supported_files(input_path, out_root))
 
     if not files:
-        print("Aucun fichier PDF/image supporté trouvé.")
-        return
+        log("Aucun fichier PDF/image supporté trouvé.")
+        return []
 
     collisions = stem_collisions(files, input_path)
-    print(f"{len(files)} fichier(s) à traiter.")
+    log(f"{len(files)} fichier(s) à traiter.")
     results = []
     for index, file_path in enumerate(files, 1):
         target_dir = output_dir_for_file_with_collisions(
@@ -260,28 +277,28 @@ def main():
             collisions,
         )
         expected_result = expected_result_paths(file_path, target_dir)
-        if args.skip_existing and output_is_complete(expected_result):
-            print(f"[{index}/{len(files)}] {file_path} -> {target_dir} (déjà traité, ignoré)")
+        if skip_existing and output_is_complete(expected_result):
+            log(f"[{index}/{len(files)}] {file_path} -> {target_dir} (déjà traité, ignoré)")
             results.append(expected_result)
             continue
 
-        print(f"[{index}/{len(files)}] {file_path} -> {target_dir}")
+        log(f"[{index}/{len(files)}] {file_path} -> {target_dir}")
         try:
             if file_path.stat().st_size == 0:
                 raise ValueError("Fichier vide.")
             result = transcribe_path(
                 file_path,
                 target_dir,
-                dpi=args.dpi,
-                ocr_mode=args.ocr,
-                ocr_langs=args.ocr_langs,
-                document_type=args.document_type,
-                include_blocks=args.include_blocks,
-                clean=not args.no_clean,
-                markdown_mode=args.markdown_mode,
+                dpi=dpi,
+                ocr_mode=ocr_mode,
+                ocr_langs=ocr_langs,
+                document_type=document_type,
+                include_blocks=include_blocks,
+                clean=clean,
+                markdown_mode=markdown_mode,
             )
         except Exception as exc:
-            print(f"Erreur: {exc}", file=sys.stderr)
+            error_log(f"Erreur: {exc}")
             if input_path.is_file():
                 raise SystemExit(2) from None
             results.append({
@@ -295,17 +312,35 @@ def main():
                 "error": str(exc),
             })
             continue
-        print(f"  Markdown: {result['markdown']}")
-        print(f"  HTML: {result['html']}")
-        print(f"  JSON: {result['json']}")
+        log(f"  Markdown: {result['markdown']}")
+        log(f"  HTML: {result['html']}")
+        log(f"  JSON: {result['json']}")
         result["status"] = "ok"
         results.append(result)
 
     if input_path.is_dir():
         index_path = write_index(out_root, results)
-        print(f"  Index HTML: {index_path}")
+        log(f"  Index HTML: {index_path}")
 
-    print("Terminé.")
+    log("Terminé.")
+    return results
+
+
+def main():
+    args = parse_args()
+    run_transcription(
+        args.input,
+        args.out,
+        dpi=args.dpi,
+        ocr_mode=args.ocr,
+        ocr_langs=args.ocr_langs,
+        document_type=args.document_type,
+        include_blocks=args.include_blocks,
+        markdown_mode=args.markdown_mode,
+        clean=not args.no_clean,
+        skip_existing=args.skip_existing,
+        error_log=lambda message: print(message, file=sys.stderr),
+    )
 
 
 if __name__ == "__main__":

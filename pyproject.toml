@@ -43,6 +43,7 @@ dev = [
 
 [project.scripts]
 pippo-transcript = "pippo_transcript.cli:main"
+pippo-transcript-gui = "pippo_transcript.gui:main"
 pippo-transcript-langs = "pippo_transcript.langs:main"
 
 [tool.setuptools.packages.find]

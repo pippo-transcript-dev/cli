@@ -1564,13 +1564,14 @@ def markdown_cell(text):
     return normalize_inline_text(text).replace("|", "\\|")
 
 
-def markdown_table_from_rows(headers, rows):
+def markdown_table_from_rows(headers, rows, include_separator=True):
     if not rows:
         return ""
 
     md = []
     md.append("| " + " | ".join(markdown_cell(cell) for cell in headers) + " |")
-    md.append("|" + "|".join("---" for _ in headers) + "|")
+    if include_separator:
+        md.append("|" + "|".join("---" for _ in headers) + "|")
     for row in rows:
         values = list(row)
         if len(values) < len(headers):
@@ -1724,6 +1725,377 @@ def markdown_table_from_raw_rows(raw_rows):
         body_rows = padded_rows
 
     return markdown_table_from_rows(headers, body_rows)
+
+
+def markdown_table_without_separator(markdown_table):
+    lines = []
+    for line in str(markdown_table or "").splitlines():
+        stripped = line.strip()
+        if re.fullmatch(r"\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?", stripped):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def bki_table_text_tokens(text):
+    return set(
+        re.findall(
+            r"[a-zäöüßà-ÿ0-9][a-zäöüßà-ÿ0-9.,/-]*",
+            normalize_inline_text(str(text or "")).lower(),
+        )
+    )
+
+
+def bki_markdown_table_tokens(table):
+    markdown_table = table.get("markdown_table") or ""
+    raw_rows = table.get("raw_rows") or []
+    raw_text = " ".join(" ".join(str(cell) for cell in row) for row in raw_rows)
+    return bki_table_text_tokens(f"{markdown_table} {raw_text}")
+
+
+def bki_table_dimensions(table):
+    markdown_table = table.get("markdown_table") or ""
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in markdown_table.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows and table.get("raw_rows"):
+        rows = table.get("raw_rows") or []
+    return len(rows), max((len(row) for row in rows), default=0)
+
+
+def is_bki_small_crop_header(table):
+    rows, cols = bki_table_dimensions(table)
+    if rows > 2 or cols > 10:
+        return False
+    tokens = bki_markdown_table_tokens(table)
+    if not tokens:
+        return True
+    text = " ".join(tokens)
+    has_header_word = any(
+        word in text
+        for word in (
+            "preise", "positionen", "kurztext", "langtext",
+            "kostengruppe", "einheit", "leistungsbereiche",
+            "inhalt", "benutzerhinweise",
+        )
+    )
+    has_data_signal = bool(re.search(r"\b\d{1,4}\b.*(?:€|\bkg\b|\bst\b|\bm2\b|\bm3\b|\bh\b)", text))
+    return has_header_word and not has_data_signal
+
+
+def bki_filter_redundant_tables(tables):
+    kept = []
+    kept_meta = []
+    for table in tables:
+        tokens = bki_markdown_table_tokens(table)
+        rows, cols = bki_table_dimensions(table)
+        if not tokens or is_bki_small_crop_header(table):
+            continue
+        redundant = False
+        for meta in kept_meta:
+            previous_tokens = meta["tokens"]
+            previous_rows = meta["rows"]
+            if tokens == previous_tokens:
+                redundant = True
+                break
+            overlap = len(tokens & previous_tokens) / max(1, len(tokens))
+            if len(tokens) >= 5 and previous_rows >= 2 and overlap >= 0.78:
+                redundant = True
+                break
+            if rows == 1 and previous_rows >= 3 and len(tokens & previous_tokens) >= max(3, int(len(tokens) * 0.65)):
+                redundant = True
+                break
+        if redundant:
+            continue
+        kept.append(table)
+        kept_meta.append({"tokens": tokens, "rows": rows, "cols": cols})
+    return kept
+
+
+def bki_text_duplicates_table(text, tables):
+    text = normalize_inline_text(text)
+    tokens = bki_table_text_tokens(text)
+    if len(tokens) < 25:
+        return False
+    if len(re.findall(r"\b\d+[,.]?\d*\b", text)) < 6:
+        return False
+    for table in tables:
+        table_tokens = bki_markdown_table_tokens(table)
+        if table_tokens and len(tokens & table_tokens) / max(1, len(tokens)) >= 0.90:
+            return True
+    return False
+
+
+def bki_native_cost_value(text):
+    text = normalize_inline_text(text).replace("−", "–").replace("-", "–")
+    if text in {"–", "-"}:
+        return "–"
+    if re.fullmatch(r"<\s*0,\s*1%?", text):
+        return "< 0,1%" if text.endswith("%") else "< 0,1"
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})*,\d{2}%?", text):
+        return text
+    if re.fullmatch(r"\d+,\d+%?", text):
+        return text
+    return ""
+
+
+def split_bki_label_unit(label):
+    label = normalize_inline_text(label)
+    match = re.search(r"\[([^\]]+)\]\s*$", label)
+    if not match:
+        return label, ""
+    unit = match.group(1).replace("m2", "m²").replace("m3", "m³")
+    return label[:match.start()].strip(), unit
+
+
+def parse_bki_native_kostengruppen_block(text):
+    lines = [normalize_inline_text(line) for line in str(text or "").splitlines()]
+    lines = [line for line in lines if line]
+    rows = []
+    index = 0
+
+    while index < len(lines):
+        code = lines[index]
+        if not re.fullmatch(r"\d{3}", code):
+            index += 1
+            continue
+        if index + 1 >= len(lines):
+            break
+
+        label = lines[index + 1]
+        index += 2
+        values = []
+        while index < len(lines) and not re.fullmatch(r"\d{3}", lines[index]):
+            value = bki_native_cost_value(lines[index])
+            if value:
+                values.append(value)
+            else:
+                label = normalize_inline_text(f"{label} {lines[index]}")
+            index += 1
+
+        if values and len(values) not in {4}:
+            continue
+
+        item_label, unit = split_bki_label_unit(label)
+        if values:
+            rows.append([code, item_label, unit, *values[:4]])
+        else:
+            rows.append([code, item_label, "", "", "", "", ""])
+
+    return rows
+
+
+def bki_native_kostengruppen_table_from_blocks(blocks):
+    table_blocks = []
+    header_blocks = []
+    for block in blocks:
+        text = block.get("text", "")
+        normalized = normalize_inline_text(text)
+        bbox = block.get("bbox") or [0, 0, 0, 0]
+        if "Kostengruppen" in normalized and "KG an 300+400" in normalized:
+            header_blocks.append(block)
+            continue
+        if re.match(r"^\s*\d{3}\s*\n", text) and bbox[0] < 180 and bbox[2] - bbox[0] > 70:
+            parsed = parse_bki_native_kostengruppen_block(text)
+            if parsed:
+                table_blocks.append((block, parsed))
+
+    rows = []
+    for _, parsed in sorted(table_blocks, key=lambda item: (item[0]["bbox"][1], item[0]["bbox"][0])):
+        rows.extend(parsed)
+
+    data_rows = [row for row in rows if any(row[3:])]
+    if len(data_rows) < 3:
+        return None
+
+    headers = ["KG", "Kostengruppe", "Einheit", "von", "Mittel", "bis", "KG an 300+400"]
+    bboxes = [
+        block.get("bbox")
+        for block, _ in table_blocks
+        if block.get("bbox")
+    ] + [
+        block.get("bbox")
+        for block in header_blocks
+        if block.get("bbox")
+    ]
+    x0 = min(bbox[0] for bbox in bboxes)
+    y0 = min(bbox[1] for bbox in bboxes)
+    x1 = max(bbox[2] for bbox in bboxes)
+    y1 = max(bbox[3] for bbox in bboxes)
+
+    return {
+        "label": "Tableau BKI Kostengruppen",
+        "bbox": [x0 - 6, y0 - 4, x1 + 6, y1 + 4],
+        "source": "native-bki-kostengruppen",
+        "markdown_table": markdown_table_from_rows(headers, rows),
+        "data_rows": rows,
+    }
+
+
+def native_bki_kostengruppen_regions(blocks):
+    text = "\n".join(block.get("text", "") for block in blocks)
+    if "Kostengruppen" not in text or "KG an 300+400" not in text or "€/Einheit" not in text:
+        return []
+    table = bki_native_kostengruppen_table_from_blocks(blocks)
+    return [table] if table else []
+
+
+def bki_lifespan_value(text):
+    text = normalize_inline_text(text)
+    return text if re.fullmatch(r"\d{1,3}", text) else ""
+
+
+def parse_bki_lifespan_block(text):
+    lines = []
+    buffer = ""
+    for raw_line in str(text or "").splitlines():
+        line = normalize_inline_text(raw_line.replace("\xa0", " "))
+        if not line:
+            continue
+        if line.endswith("-"):
+            buffer += line[:-1]
+            continue
+        if buffer:
+            line = buffer + line
+            buffer = ""
+        lines.append(line)
+    if buffer:
+        lines.append(buffer)
+    lines = [line for line in lines if line]
+    rows = []
+    pending = []
+    index = 0
+
+    def count_value_groups(start=0):
+        count = 0
+        cursor = start
+        while cursor < len(lines):
+            while cursor < len(lines) and not bki_lifespan_value(lines[cursor]):
+                cursor += 1
+            values = 0
+            while cursor < len(lines) and bki_lifespan_value(lines[cursor]) and values < 3:
+                values += 1
+                cursor += 1
+            if values == 3:
+                count += 1
+            else:
+                cursor += 1
+        return count
+
+    if len(lines) >= 5 and not bki_lifespan_value(lines[0]) and not bki_lifespan_value(lines[1]):
+        first_line_is_group = (
+            count_value_groups(1) >= 2
+            or (
+                len(lines[0]) <= 35
+                and "," not in lines[0]
+                and " und " not in lines[0].lower()
+            )
+        )
+        if first_line_is_group:
+            rows.append({"type": "group", "label": lines[0], "values": []})
+            index = 1
+
+    while index < len(lines):
+        values = []
+        cursor = index
+        while cursor < len(lines) and len(values) < 3:
+            value = bki_lifespan_value(lines[cursor])
+            if not value:
+                break
+            values.append(value)
+            cursor += 1
+
+        if len(values) == 3 and pending:
+            label = normalize_inline_text(" ".join(pending))
+            rows.append({"type": "item", "label": label, "values": values})
+            pending = []
+            index = cursor
+            continue
+
+        pending.append(lines[index])
+        index += 1
+
+    if pending:
+        rows.append({"type": "group", "label": normalize_inline_text(" ".join(pending)), "values": []})
+
+    return rows
+
+
+def bki_native_lifespan_table_from_blocks(blocks):
+    header_blocks = []
+    table_blocks = []
+    for block in blocks:
+        text = block.get("text", "")
+        normalized = normalize_inline_text(text)
+        bbox = block.get("bbox") or [0, 0, 0, 0]
+        if (
+            "BKI Baukosteninformationszentrum" in normalized
+            or "Lizenz für" in normalized
+            or "Webshop-ID" in normalized
+        ):
+            continue
+        if "Lebensdauer von Bauteilen in Jahren" in normalized:
+            header_blocks.append(block)
+            continue
+        if bbox[0] < 180 and bbox[2] - bbox[0] > 60:
+            parsed = parse_bki_lifespan_block(text)
+            if any(row["type"] == "item" for row in parsed):
+                table_blocks.append((block, parsed))
+            elif parsed and len(parsed[0]["label"]) > 3 and bbox[1] > 30:
+                table_blocks.append((block, parsed))
+
+    if not header_blocks or not table_blocks:
+        return None
+
+    output_rows = []
+    active_group = ""
+    item_count = 0
+    for _, parsed_rows in sorted(table_blocks, key=lambda item: (item[0]["bbox"][1], item[0]["bbox"][0])):
+        for row in parsed_rows:
+            label = row["label"]
+            if row["type"] == "group":
+                active_group = label
+                output_rows.append([active_group, "", "", "", ""])
+                continue
+            values = row["values"]
+            output_rows.append([active_group, label, *values])
+            item_count += 1
+
+    if item_count < 3:
+        return None
+
+    headers = ["Gruppe", "Bauteil", "von", "Mittel", "bis"]
+    bboxes = [
+        block.get("bbox")
+        for block, _ in table_blocks
+        if block.get("bbox")
+    ] + [
+        block.get("bbox")
+        for block in header_blocks
+        if block.get("bbox")
+    ]
+    x0 = min(bbox[0] for bbox in bboxes)
+    y0 = min(bbox[1] for bbox in bboxes)
+    x1 = max(bbox[2] for bbox in bboxes)
+    y1 = max(bbox[3] for bbox in bboxes)
+
+    return {
+        "label": "Tableau BKI Lebensdauer",
+        "bbox": [x0 - 6, y0 - 4, x1 + 6, y1 + 4],
+        "source": "native-bki-lifespan",
+        "markdown_table": markdown_table_from_rows(headers, output_rows),
+        "data_rows": output_rows,
+    }
+
+
+def native_bki_lifespan_regions(blocks):
+    text = "\n".join(block.get("text", "") for block in blocks)
+    if "Lebensdauer von Bauteilen in Jahren" not in text:
+        return []
+    table = bki_native_lifespan_table_from_blocks(blocks)
+    return [table] if table else []
 
 
 def fahrradstellplaetze_markdown(building):
@@ -1955,6 +2327,219 @@ def bki_markdown_table_from_ocr(ocr_text):
         headers,
         rows,
     )
+
+
+BKI_COMPACT_UNITS = {
+    "St", "m", "m2", "m3", "cm2", "dm3", "m2Wo", "m3Wo", "m3Mt", "m2Mt",
+    "m2d", "mh", "md", "mWo", "mMt", "ma", "Sth", "Std", "StWo", "StMt",
+    "td", "tMt", "tWo", "h", "psch", "kg", "t", "l", "Wo", "Mt",
+}
+
+
+def bki_compact_price_tokens(text):
+    return [
+        re.sub(r"\s+", " ", token.strip())
+        for token in re.findall(r"<?\s*\d+(?:[.,]\d+)?(?:\.\d+)*(?:,\d+)?", str(text or ""))
+    ]
+
+
+def bki_compact_line_is_price(text):
+    text = normalize_inline_text(text)
+    tokens = bki_compact_price_tokens(text)
+    return bool(tokens) and "".join(tokens).replace(" ", "") == text.replace(" ", "")
+
+
+def bki_compact_logical_lines(text):
+    lines = []
+    buffer = ""
+    for raw_line in str(text or "").splitlines():
+        line = normalize_inline_text(raw_line.replace("\xa0", " "))
+        if not line:
+            continue
+        if (
+            "Lizenz für" in line
+            or "Webshop-ID" in line
+            or "BKI Baukosteninformationszentrum" in line
+        ):
+            continue
+        buffer = f"{buffer}{line}" if buffer else line
+        if buffer.endswith("-"):
+            buffer = buffer[:-1]
+            continue
+        lines.append(buffer)
+        buffer = ""
+    if buffer:
+        lines.append(buffer)
+    return lines
+
+
+def bki_compact_item_start(lines, index):
+    if index < 0 or index + 3 >= len(lines):
+        return False
+    if not re.fullmatch(r"\d{1,3}", lines[index]):
+        return False
+    if re.fullmatch(r"\d{3}", lines[index]) and index < 6:
+        return False
+    next_line = lines[index + 1]
+    if (
+        bki_compact_line_is_price(next_line)
+        or re.fullmatch(r"\d{1,3}", next_line)
+        or next_line in BKI_COMPACT_UNITS
+        or next_line.startswith("KG ")
+        or "€" in next_line
+    ):
+        return False
+    return any("€ brutto" in line for line in lines[index + 2:index + 14])
+
+
+def parse_bki_compact_price_items(native_text):
+    lines = bki_compact_logical_lines(native_text)
+    items = []
+    index = 0
+    while index < len(lines):
+        if not bki_compact_item_start(lines, index):
+            index += 1
+            continue
+
+        number = lines[index]
+        short_text = lines[index + 1]
+        description = []
+        cursor = index + 2
+        while cursor < len(lines):
+            if (
+                lines[cursor] in BKI_COMPACT_UNITS
+                and cursor + 1 < len(lines)
+                and "€ brutto" in lines[cursor + 1]
+            ):
+                break
+            if bki_compact_item_start(lines, cursor):
+                break
+            description.append(lines[cursor])
+            cursor += 1
+
+        if cursor >= len(lines) or lines[cursor] not in BKI_COMPACT_UNITS:
+            index += 1
+            continue
+
+        unit = lines[cursor]
+        cursor += 1
+        gross_values = []
+        net_values = []
+        cost_group = ""
+
+        if cursor < len(lines) and "€ brutto" in lines[cursor]:
+            gross_values.extend(bki_compact_price_tokens(lines[cursor].replace("€ brutto", "")))
+            cursor += 1
+        while (
+            cursor < len(lines)
+            and not lines[cursor].startswith("KG ")
+            and lines[cursor] != "€ netto"
+            and not bki_compact_item_start(lines, cursor)
+        ):
+            gross_values.extend(bki_compact_price_tokens(lines[cursor]))
+            cursor += 1
+            if len(gross_values) >= 5 and cursor < len(lines) and (
+                lines[cursor].startswith("KG ") or lines[cursor] == "€ netto"
+            ):
+                break
+
+        if cursor < len(lines) and lines[cursor].startswith("KG "):
+            match = re.search(r"KG\s+(\d+)", lines[cursor])
+            cost_group = match.group(1) if match else ""
+            rest = re.sub(r"^KG\s+\d+\s*€\s*netto", "", lines[cursor]).strip()
+            net_values.extend(bki_compact_price_tokens(rest))
+            cursor += 1
+        elif cursor < len(lines) and lines[cursor] == "€ netto":
+            cursor += 1
+
+        while cursor < len(lines) and not bki_compact_item_start(lines, cursor):
+            if lines[cursor].startswith("LB ") or lines[cursor] in {
+                "Preise €", "Nr.", "Kurztext / Stichworte", "Einheit / Kostengruppe",
+                "▶", "▷", "netto ø", "◁", "◀", "brutto ø",
+            }:
+                break
+            net_values.extend(bki_compact_price_tokens(lines[cursor]))
+            cursor += 1
+            if len(net_values) >= 5 and (
+                cursor >= len(lines) or bki_compact_item_start(lines, cursor)
+            ):
+                break
+
+        if len(gross_values) >= 5 and len(net_values) >= 5:
+            items.append({
+                "number": number,
+                "short_text": short_text,
+                "description": " ".join(description),
+                "unit": unit,
+                "cost_group": cost_group,
+                "gross": gross_values[:5],
+                "net": net_values[:5],
+            })
+            index = cursor
+        else:
+            index += 1
+
+    return items
+
+
+def bki_compact_page_heading(native_text):
+    lines = bki_compact_logical_lines(native_text)
+    lb_code = ""
+    title = ""
+    bad_title = re.compile(r"(?:min|von|mittel|bis|max|kosten:|bundesdurchschnitt)", re.I)
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"\d{3}", line) and index + 1 < len(lines):
+            candidate = lines[index + 1]
+            if (
+                not re.fullmatch(r"\d{1,3}", candidate)
+                and "€" not in candidate
+                and candidate not in BKI_COMPACT_UNITS
+                and not bad_title.search(candidate)
+                and not re.search(r"[▶▷◁◀⏵⏴]", candidate)
+            ):
+                lb_code = line
+                title = candidate
+                break
+    explicit_lb = re.search(r"\bLB\s+(\d{3})\b", "\n".join(lines))
+    if explicit_lb:
+        lb_code = explicit_lb.group(1)
+    return lb_code, title
+
+
+def is_bki_compact_price_page(page):
+    native_text = page.get("native_text", "")
+    return (
+        "Kurztext / Stichworte" in native_text
+        and "€ brutto" in native_text
+        and bool(parse_bki_compact_price_items(native_text))
+    )
+
+
+def write_bki_compact_price_page(f, page):
+    native_text = page.get("native_text", "")
+    items = parse_bki_compact_price_items(native_text)
+    lb_code, title = bki_compact_page_heading(native_text)
+
+    if lb_code or title:
+        f.write(f"{normalize_inline_text(f'{lb_code} {title}')}\n\n")
+    if lb_code:
+        f.write(f"LB {lb_code} Preise €\n\n")
+    f.write(f"{page['page']} © BKI Baukosteninformationszentrum\n\n")
+
+    headers = [
+        "Nr.", "Kurztext", "Stichworte", "Einheit", "KG",
+        "brutto min", "brutto von", "brutto mittel", "brutto bis", "brutto max",
+        "netto min", "netto von", "netto mittel", "netto bis", "netto max",
+    ]
+    rows = []
+    for item in items:
+        rows.append([
+            item["number"], item["short_text"], item["description"],
+            item["unit"], item["cost_group"],
+            *item["gross"], *item["net"],
+        ])
+    f.write(markdown_table_from_rows(headers, rows, include_separator=False))
+    f.write("\n\n")
 
 
 def bki_crop_bbox(image_size):
@@ -3106,7 +3691,9 @@ def detect_piezometric_table_regions(page):
 def detect_table_regions(page, blocks):
     text = page.get_text("text")
     page_rect = page.rect
-    regions = detect_sgs_table_regions(page)
+    regions = native_bki_kostengruppen_regions(blocks)
+    regions.extend(native_bki_lifespan_regions(blocks))
+    regions.extend(detect_sgs_table_regions(page))
     regions.extend(detect_sol_essais_table_regions(page))
     regions.extend(detect_sol_essais_quote_table_regions(page))
     regions.extend(detect_piezometric_table_regions(page))
@@ -3180,6 +3767,22 @@ def detect_table_regions(page, blocks):
         if not duplicate:
             deduped.append(region)
 
+    native_bki_rects = [
+        rect_from_bbox(region["bbox"])
+        for region in deduped
+        if region.get("source") in {"native-bki-kostengruppen", "native-bki-lifespan"}
+    ]
+    if native_bki_rects:
+        for region in deduped:
+            if region.get("source") in {"native-bki-kostengruppen", "native-bki-lifespan"}:
+                continue
+            rect = rect_from_bbox(region["bbox"])
+            for bki_rect in native_bki_rects:
+                intersection = rect & bki_rect
+                if intersection and intersection.get_area() > 0.65 * rect.get_area():
+                    region["display_role"] = "layout"
+                    break
+
     return deduped
 
 
@@ -3246,7 +3849,7 @@ def extract_page_regions(page, page_index, blocks, out_dir, dpi):
         rect = rect_from_bbox(region["bbox"])
         image_path = table_dir / f"page_{page_index:03d}_table_{index:03d}.png"
         crop_pdf_region(page, rect, image_path, dpi)
-        markdown_table = extract_photo_annex_markdown_table(
+        markdown_table = region.get("markdown_table") or extract_photo_annex_markdown_table(
             page,
             region,
             table_dir,
@@ -3262,7 +3865,7 @@ def extract_page_regions(page, page_index, blocks, out_dir, dpi):
             "page": page_index,
             "image": str(image_path),
             "markdown_table": markdown_table,
-            "data_rows": structured_rows_from_region(page, region),
+            "data_rows": region.get("data_rows") or structured_rows_from_region(page, region),
             **({"display_role": display_role} if display_role else {}),
         })
 
@@ -4225,7 +4828,8 @@ def write_reflowed_text_block(f, title, text):
     if not text:
         return
 
-    f.write(f"{title}\n\n")
+    if title:
+        f.write(f"{title}\n\n")
     f.write(text)
     f.write("\n\n")
 
@@ -4668,6 +5272,23 @@ def page_element_column_index(element, columns):
     return min(range(len(columns)), key=lambda item: abs(center - columns[item]["center"]))
 
 
+def normalize_markdown_mode(markdown_mode):
+    if markdown_mode == "bki-tables":
+        return "bki"
+    return markdown_mode or "clean"
+
+
+def should_show_full_page_ocr_with_regions(page, regions, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
+    if not page.get("ocr_text"):
+        return False
+    if markdown_mode == "audit":
+        return True
+    if any(region.get("source") == "image-document-detection" for region in regions):
+        return True
+    return page_region_coverage(page, regions) < 0.55
+
+
 def sort_page_elements(elements, page, text_blocks):
     if not elements:
         return []
@@ -4723,10 +5344,13 @@ def sort_page_elements(elements, page, text_blocks):
 
 
 def page_elements(page, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     visible_tables = [
         table for table in page.get("table_crops", [])
         if markdown_mode == "audit" or table.get("display_role") != "layout"
     ]
+    if markdown_mode == "bki":
+        visible_tables = bki_filter_redundant_tables(visible_tables)
     regions = visible_tables + page.get("visual_crops", [])
     elements = []
     text_blocks = []
@@ -4740,6 +5364,8 @@ def page_elements(page, markdown_mode="clean"):
             continue
         text = block.get("text", "").strip()
         if not text:
+            continue
+        if markdown_mode == "bki" and bki_text_duplicates_table(text, visible_tables):
             continue
         text_blocks.append(block)
         elements.append({
@@ -4789,8 +5415,7 @@ def page_elements(page, markdown_mode="clean"):
         })
 
     if not page.get("text_blocks") and page.get("ocr_text"):
-        region_coverage = page_region_coverage(page, regions)
-        if not elements or markdown_mode == "audit" or region_coverage < 0.55:
+        if not elements or should_show_full_page_ocr_with_regions(page, regions, markdown_mode=markdown_mode):
             elements.append({
                 "type": "text",
                 "bbox": [0, 0, page.get("width", 0), page.get("height", 0)],
@@ -4907,6 +5532,7 @@ def has_full_page_embedded_image(page):
 
 
 def embedded_images_for_markdown(page, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     if markdown_mode == "audit":
         return page.get("embedded_images", [])
 
@@ -4938,6 +5564,22 @@ def is_decorative_text_noise(page, block):
     page_height = page.get("height", 0) or 0
     x0, y0, x1, y1 = bbox
     compact = text.lower()
+
+    if page_height and y0 > page_height - 45 and "bki baukosteninformationszentrum" in compact:
+        return True
+
+    if x0 > 450 and any(
+        marker in compact
+        for marker in (
+            "lebensdauern",
+            "grobelementarten",
+            "stahlbau",
+            "gebäudearten",
+            "kostengruppen",
+            "elementarten",
+        )
+    ):
+        return True
 
     if y1 < 105 and x0 < 175 and (
         "essais" in compact
@@ -4990,6 +5632,7 @@ def visual_has_graph_data(visual):
 
 
 def show_visual_analysis(visual, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     if markdown_mode == "audit":
         return bool(visual.get("analysis"))
     return bool(visual.get("analysis") and visual_has_graph_data(visual))
@@ -5033,6 +5676,7 @@ def structured_summary_to_html(structured):
 
 
 def write_markdown_visual(f, visual, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     if markdown_mode != "audit":
         if visual.get("image"):
             f.write(f"![{visual.get('label', 'Visuel')}]({Path(visual['image']).resolve()})\n\n")
@@ -5059,6 +5703,7 @@ def write_markdown_visual(f, visual, markdown_mode="clean"):
 
 
 def write_page_element_markdown(f, element, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     element_type = element.get("type")
     if element_type == "text":
         if markdown_mode == "audit":
@@ -5074,9 +5719,12 @@ def write_page_element_markdown(f, element, markdown_mode="clean"):
         elif not table.get("markdown_table") and table.get("image"):
             f.write("### Tableau à vérifier\n\n")
         if table.get("markdown_table"):
-            f.write(table["markdown_table"])
+            if markdown_mode == "bki" and table.get("source") not in {"native-bki-kostengruppen", "native-bki-lifespan"}:
+                f.write(markdown_table_without_separator(table["markdown_table"]))
+            else:
+                f.write(table["markdown_table"])
             f.write("\n\n")
-        if table.get("image"):
+        if table.get("image") and not (markdown_mode == "bki" and table.get("markdown_table")):
             f.write(f"![{table.get('label', 'Tableau')}]({Path(table['image']).resolve()})\n\n")
         return
 
@@ -5099,6 +5747,7 @@ def write_page_element_markdown(f, element, markdown_mode="clean"):
 
 
 def page_element_to_html(element, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     element_type = element.get("type")
     if element_type == "text":
         if markdown_mode == "audit":
@@ -5113,8 +5762,11 @@ def page_element_to_html(element, markdown_mode="clean"):
         elif not table.get("markdown_table") and table.get("image"):
             parts.append("<h3>Tableau à vérifier</h3>")
         if table.get("markdown_table"):
-            parts.append(markdown_table_to_html(table["markdown_table"]))
-        if table.get("image"):
+            markdown_table = table["markdown_table"]
+            if markdown_mode == "bki" and table.get("source") not in {"native-bki-kostengruppen", "native-bki-lifespan"}:
+                markdown_table = markdown_table_without_separator(markdown_table)
+            parts.append(markdown_table_to_html(markdown_table))
+        if table.get("image") and not (markdown_mode == "bki" and table.get("markdown_table")):
             parts.append(
                 f"<div class=\"crop\"><img src=\"{html.escape(str(Path(table['image']).resolve()))}\" alt=\"{html.escape(table.get('label', 'Tableau'))}\"></div>"
             )
@@ -5160,6 +5812,7 @@ def page_element_to_html(element, markdown_mode="clean"):
 
 
 def write_html_report(result, html_path, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     source_name = Path(result["source"]).name
     structured = result.get("structured") or {}
 
@@ -5207,7 +5860,27 @@ def write_html_report(result, html_path, markdown_mode="clean"):
         parts.append(f"<img src=\"{html.escape(str(Path(page['page_image']).resolve()))}\" alt=\"Page {page['page']}\">")
         parts.append("</div><div>")
 
-        if is_bki_kostenkennwerte_page(page):
+        if markdown_mode == "bki" and is_bki_compact_price_page(page):
+            lb_code, title = bki_compact_page_heading(page.get("native_text", ""))
+            if lb_code or title:
+                parts.append(f"<h3>{html.escape(normalize_inline_text(f'{lb_code} {title}'))}</h3>")
+            rows = []
+            for item in parse_bki_compact_price_items(page.get("native_text", "")):
+                rows.append([
+                    item["number"], item["short_text"], item["description"],
+                    item["unit"], item["cost_group"],
+                    *item["gross"], *item["net"],
+                ])
+            parts.append(markdown_table_to_html(markdown_table_from_rows(
+                [
+                    "Nr.", "Kurztext", "Stichworte", "Einheit", "KG",
+                    "brutto min", "brutto von", "brutto mittel", "brutto bis", "brutto max",
+                    "netto min", "netto von", "netto mittel", "netto bis", "netto max",
+                ],
+                rows,
+                include_separator=False,
+            )))
+        elif is_bki_kostenkennwerte_page(page):
             parts.append("<h3>BKI Kostenkennwerte</h3>")
             for visual in page.get("visual_crops", []):
                 parts.append(page_element_to_html({
@@ -5222,7 +5895,6 @@ def write_html_report(result, html_path, markdown_mode="clean"):
                     parts.append(rendered_element)
 
         if markdown_mode == "audit" and page.get("ocr_text"):
-            parts.append("<h3>Texte OCR</h3>")
             parts.append(paragraph_text_to_html(page["ocr_text"]))
 
         parts.append("</div></div></section>")
@@ -5232,6 +5904,7 @@ def write_html_report(result, html_path, markdown_mode="clean"):
 
 
 def write_outputs(result, out_dir, stem, include_blocks=False, markdown_mode="clean"):
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     json_path = out_dir / f"{stem}_transcription.json"
     md_path = out_dir / f"{stem}_transcription.md"
     text_path = out_dir / f"{stem}_transcription.txt"
@@ -5259,6 +5932,10 @@ def write_outputs(result, out_dir, stem, include_blocks=False, markdown_mode="cl
             f.write(f"## Page {page['page']}\n\n")
             f.write(f"![Page {page['page']}]({Path(page['page_image']).resolve()})\n\n")
 
+            if markdown_mode == "bki" and is_bki_compact_price_page(page):
+                write_bki_compact_price_page(f, page)
+                continue
+
             if is_bki_kostenkennwerte_page(page):
                 write_bki_kostenkennwerte_page(f, page)
                 continue
@@ -5271,7 +5948,7 @@ def write_outputs(result, out_dir, stem, include_blocks=False, markdown_mode="cl
                 write_page_element_markdown(f, element, markdown_mode=markdown_mode)
 
             if page["ocr_text"] and markdown_mode == "audit":
-                write_reflowed_text_block(f, "### Texte OCR", page["ocr_text"])
+                write_reflowed_text_block(f, "", page["ocr_text"])
 
             if include_blocks and page["text_blocks"]:
                 f.write("### Blocs Texte Avec Coordonnées\n\n")
@@ -5322,6 +5999,7 @@ def transcribe_path(
     if not input_path.exists():
         raise FileNotFoundError(input_path)
 
+    markdown_mode = normalize_markdown_mode(markdown_mode)
     ensure_tesseract_available(ocr_mode, ocr_langs)
 
     if clean:
@@ -5408,9 +6086,12 @@ def main():
     )
     parser.add_argument(
         "--markdown-mode",
-        choices=["clean", "audit"],
+        choices=["clean", "audit", "bki-tables", "bki"],
         default="clean",
-        help="clean = Markdown lisible; audit = affiche aussi les éléments bruts/techniques.",
+        help=(
+            "clean = Markdown lisible; audit = affiche aussi les éléments bruts/techniques; "
+            "bki-tables = transcription optimisée pour les tableaux BKI. bki reste accepté comme alias."
+        ),
     )
     args = parser.parse_args()
 

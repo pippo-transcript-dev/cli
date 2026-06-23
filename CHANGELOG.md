@@ -10,20 +10,23 @@
 - Reflow des paragraphes dans les sorties lisibles.
 - Extraction de pages, images intégrées, tableaux et visuels.
 - Mode Markdown `clean` ou `audit`.
+- Mode Markdown spécialisé `bki-tables` pour les sorties BKI, avec `bki` conservé comme alias.
 - Classification des images intégrées : image, logo/icône, doublon, micro-image, tuile.
 - Masquage des tuiles PDF dans les sorties propres.
 - Extracteurs spécialisés BKI, SGS, SOL-ESSAIS, Fahrradstellplätze et piézométrie.
 - Données piézométriques structurées dans le JSON.
 - Analyse de graphiques niveau 1 depuis tableaux/données structurées.
-- Analyse graphique niveau 2 expérimentale depuis l'image, avec transcription dashboard en mode propre, crops dédiés pour chaque KPI/panneau/graphique, matrices/heatmaps OCR quand elles sont détectables, classification probable, métriques OCR structurées et lecture OCR spatiale en mode audit.
+- Analyse graphique niveau 2 expérimentale depuis l'image, avec crops dédiés pour chaque KPI/panneau/graphique, matrices/heatmaps OCR quand elles sont détectables, classification probable, métriques OCR structurées et lecture OCR spatiale dans le JSON et le mode audit.
 - Extra optionnel `vision` pour les améliorations non-LLM de graphiques.
 - Nettoyage fuzzy de libellés OCR, correction contrôlée de matrices pour certains dashboards clairement reconnus et validation géométrique des bar charts.
 - Les donuts/camemberts sont conservés comme crops visuels, sans transcription automatique de segments lorsque la lecture n'est pas fiable.
+- Le Markdown propre conserve les graphiques comme images/crops à vérifier au lieu d'afficher une interprétation fragile.
 - Modèle `pages[].elements[]` pour ordonner texte, tableaux, visuels et images selon leurs coordonnées.
 - Rendu Markdown/HTML basé sur les éléments ordonnés de la page.
 - Masquage des headers/footers répétés dans les sorties propres.
 - Extraction structurée prudente pour reçus : date, marchand, montant total, montants/dates détectés et confiance.
 - Extraction structurée prudente pour cartes de visite : nom, société, fonction, email, téléphone, site web, adresse et confiance.
 - Recadrage du document principal dans les images contenant un reçu, une carte ou une page photographiée.
+- Les images scannées ou photographiées conservent à la fois le crop visuel et la transcription OCR dans le Markdown quand le texte existe.
 - Garde-fous contre les faux positifs connus : tableaux BKI pris pour cartes de visite, factures prises pour dashboards/graphiques.
 - Tests de non-régression initiaux.

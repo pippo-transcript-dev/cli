@@ -9,14 +9,22 @@ from pippo_transcript.core import (
     extract_receipt_content,
     extract_structured_content,
     filter_redundant_experimental_visuals,
+    bki_compact_page_heading,
+    bki_filter_redundant_tables,
     bki_markdown_table_from_ocr,
+    bki_native_lifespan_table_from_blocks,
+    bki_native_kostengruppen_table_from_blocks,
+    bki_text_duplicates_table,
     is_bki_document_text,
     is_payroll_document_text,
     markdown_table_from_rows,
     markdown_table_from_raw_rows,
+    markdown_table_without_separator,
     markdown_table_to_html,
+    normalize_markdown_mode,
     page_elements,
     page_text_outside_regions,
+    parse_bki_compact_price_items,
     write_page_element_markdown,
 )
 
@@ -202,6 +210,28 @@ def test_clean_page_elements_hide_full_page_ocr_when_visual_dominates():
     assert [element["type"] for element in elements] == ["visual"]
 
 
+def test_clean_page_elements_keep_ocr_when_document_crop_dominates():
+    page = {
+        "width": 800,
+        "height": 1200,
+        "text_blocks": [],
+        "ocr_text": "SMASH CLUB\nTOTAL 87,50 €",
+        "table_crops": [],
+        "visual_crops": [{
+            "bbox": [40, 30, 760, 1160],
+            "label": "Document détecté",
+            "image": "receipt.png",
+            "source": "image-document-detection",
+        }],
+        "embedded_images": [],
+    }
+
+    elements = page_elements(page, markdown_mode="clean")
+
+    assert [element["type"] for element in elements] == ["text", "visual"]
+    assert elements[0]["text"] == "SMASH CLUB\nTOTAL 87,50 €"
+
+
 def test_clean_page_elements_hide_decorative_sol_essais_noise():
     page = {
         "width": 595,
@@ -210,6 +240,8 @@ def test_clean_page_elements_hide_decorative_sol_essais_noise():
             {"bbox": [30, 60, 145, 90], "text": "SOITESSAIS\nËruDFs cÉorrcHNrourE"},
             {"bbox": [45, 120, 250, 145], "text": "Projet de construction"},
             {"bbox": [50, 770, 550, 815], "text": "FORAGËS - PEiIETROMETRES - SIRET444"},
+            {"bbox": [50, 805, 550, 825], "text": "© BKI Baukosteninformationszentrum; Erläuterungen zu den Tabellen siehe Seite 56 101"},
+            {"bbox": [520, 178, 530, 501], "text": "Lebensdauern\nGrobelementarten\nStahlbau\nGebäudearten\nKostengruppen\nElementarten"},
         ],
         "ocr_text": "",
         "table_crops": [],
@@ -282,6 +314,11 @@ def test_clean_markdown_writes_table_without_label_when_parsed():
     rendered = buffer.getvalue()
     assert "### Tableau" not in rendered
     assert "| A |" in rendered
+
+
+def test_bki_tables_markdown_mode_is_alias_for_bki():
+    assert normalize_markdown_mode("bki-tables") == "bki"
+    assert normalize_markdown_mode("bki") == "bki"
 
 
 def test_repeated_header_footer_blocks_are_hidden_from_clean_elements():
@@ -441,6 +478,243 @@ def test_bki_gebaeudeart_table_preserves_percent_column():
     assert "KG an 300 (%)" in table
     assert "4,4%" in table
     assert "3,7%" in table
+
+
+def test_bki_compact_price_parser_uses_explicit_lb_not_page_number():
+    native_text = "\n".join([
+        "151",
+        "© BKI Baukosteninformationszentrum",
+        "020",
+        "Dachdeckungsarbeiten",
+        "77",
+        "Stundensatz, Facharbeiter/-in",
+        "Stundenlohnarbeiten für Vorarbeiter/-in und Gleich-",
+        "gestellte; Dachdeckung",
+        "h",
+        "€ brutto",
+        "81",
+        "91",
+        "96",
+        "100",
+        "107",
+        "€ netto",
+        "68",
+        "77",
+        "81",
+        "84",
+        "90",
+        "78",
+        "Stundensatz, Helfer/-in",
+        "Stundenlohnarbeiten für Werker/-in und Gleichgestellte;",
+        "Dachdeckung",
+        "h",
+        "€ brutto",
+        "53",
+        "68",
+        "77",
+        "80",
+        "89",
+        "€ netto",
+        "45",
+        "57",
+        "64",
+        "67",
+        "75",
+        "LB 020",
+        "Preise €",
+    ])
+
+    assert bki_compact_page_heading(native_text) == ("020", "Dachdeckungsarbeiten")
+
+    rows = parse_bki_compact_price_items(native_text)
+    assert [row["number"] for row in rows] == ["77", "78"]
+    assert rows[0]["description"] == (
+        "Stundenlohnarbeiten für Vorarbeiter/-in und Gleichgestellte; Dachdeckung"
+    )
+    assert rows[1]["net"] == ["45", "57", "64", "67", "75"]
+
+
+def test_markdown_table_without_separator_removes_only_separator_rows():
+    table = "| A | B |\n|---|---|\n| 1 | 2 |"
+
+    assert markdown_table_without_separator(table) == "| A | B |\n| 1 | 2 |"
+
+
+def test_bki_filter_redundant_tables_keeps_complete_table_and_drops_crop_fragments():
+    complete = {
+        "markdown_table": (
+            "| Nr. | Positionen | Einheit | brutto min | brutto max |\n"
+            "| 49 | Bautür, Holz | St | 141 | 517 |\n"
+            "| 50 | Witterungsschutz, Fensteröffnung | m2 | 11 | 67 |"
+        )
+    }
+    crop_header = {
+        "markdown_table": (
+            "| Baustelleneinrichtungen; Verkehrssicherungs- und Sicherheitseinrichtungen | Preise € |"
+        )
+    }
+    duplicate_row = {
+        "markdown_table": "| 49 | Bautür, Holz | St | 141 | 517 |"
+    }
+
+    assert bki_filter_redundant_tables([complete, crop_header, duplicate_row]) == [complete]
+
+
+def test_bki_native_kostengruppen_table_reconstructs_pdf_page_blocks():
+    table = bki_native_kostengruppen_table_from_blocks([
+        {
+            "bbox": [52.0, 21.3, 424.04, 33.1],
+            "text": "Kostengruppen\n▷\n€/Einheit\n◁\nKG an 300+400",
+        },
+        {
+            "bbox": [52.0, 42.44, 424.19, 81.96],
+            "text": "\n".join([
+                "380",
+                "Baukonstruktive Einbauten",
+                "381",
+                "Allgemeine Einbauten [m2 BGF]",
+                "7,00",
+                "41,00",
+                "76,00",
+                "0,9%",
+                "386",
+                "Orientierungs- und Informationssysteme [m2 BGF]",
+                "–",
+                "1,40",
+                "–",
+                "< 0,1%",
+                "389",
+                "Sonstiges zur KG 380 [m2 BGF]",
+                "–",
+                "3,90",
+                "–",
+                "< 0,1%",
+            ]),
+        },
+        {
+            "bbox": [52.0, 92.44, 424.19, 151.96],
+            "text": "\n".join([
+                "390",
+                "Sonstige Maßnahmen für Baukonstruktionen",
+                "391",
+                "Baustelleneinrichtung [m2 BGF]",
+                "15,00",
+                "42,00",
+                "83,00",
+                "2,4%",
+            ]),
+        },
+        {
+            "bbox": [52.0, 512.44, 187.35, 521.96],
+            "text": "480\nGebäude- und Anlagenautomation",
+        },
+        {
+            "bbox": [52.0, 532.44, 223.11, 541.96],
+            "text": "490\nSonstige Maßnahmen für technische Anlagen",
+        },
+    ])
+
+    assert table
+    markdown = table["markdown_table"]
+    assert "| KG | Kostengruppe | Einheit | von | Mittel | bis | KG an 300+400 |" in markdown
+    assert "| 380 | Baukonstruktive Einbauten |  |  |  |  |  |" in markdown
+    assert "| 381 | Allgemeine Einbauten | m² BGF | 7,00 | 41,00 | 76,00 | 0,9% |" in markdown
+    assert "| 386 | Orientierungs- und Informationssysteme | m² BGF | – | 1,40 | – | < 0,1% |" in markdown
+    assert "| 391 | Baustelleneinrichtung | m² BGF | 15,00 | 42,00 | 83,00 | 2,4% |" in markdown
+    assert "| 480 | Gebäude- und Anlagenautomation |  |  |  |  |  |" in markdown
+    assert "| 490 | Sonstige Maßnahmen für technische Anlagen |  |  |  |  |  |" in markdown
+
+
+def test_bki_native_lifespan_table_reconstructs_pdf_page_blocks():
+    table = bki_native_lifespan_table_from_blocks([
+        {
+            "bbox": [52.72, 21.86, 424.72, 31.44],
+            "text": "Lebensdauer von Bauteilen in Jahren\ne\nmittel\nf\n0\n25\n50\n75\n100\n125 Jahre",
+        },
+        {
+            "bbox": [52.73, 41.86, 121.71, 51.38],
+            "text": "Außenwandöffnungen",
+        },
+        {
+            "bbox": [52.73, 61.86, 266.17, 121.38],
+            "text": "\n".join([
+                "Fensterbänke, innen",
+                "Holz",
+                "36",
+                "63",
+                "99",
+                "Naturstein",
+                "61",
+                "86",
+                "121",
+            ]),
+        },
+        {
+            "bbox": [52.77, 481.86, 266.22, 501.38],
+            "text": "\n".join([
+                "Alutür mit Standardbeschlägen, Türschließer und",
+                "normalem Schloss",
+                "31",
+                "46",
+                "58",
+            ]),
+        },
+        {
+            "bbox": [52.78, 521.86, 266.22, 541.38],
+            "text": "\n".join([
+                "Kunststofftür mit Standardbeschlägen und Schließan-",
+                "lage",
+                "25",
+                "37",
+                "47",
+            ]),
+        },
+        {
+            "bbox": [51.0, 564.27, 521.56, 574.21],
+            "text": "© BKI Baukosteninformationszentrum; Erläuterungen zu den Tabellen siehe Seite 56\n101",
+        },
+        {
+            "bbox": [171.44, 1.91, 304.56, 10.15],
+            "text": "Lizenz für user@example.com, Bestell.-Nr.: 22788",
+        },
+    ])
+
+    assert table
+    markdown = table["markdown_table"]
+    assert "| Gruppe | Bauteil | von | Mittel | bis |" in markdown
+    assert "| Außenwandöffnungen |  |  |  |  |" in markdown
+    assert "| Fensterbänke, innen | Holz | 36 | 63 | 99 |" in markdown
+    assert "| Fensterbänke, innen | Naturstein | 61 | 86 | 121 |" in markdown
+    assert (
+        "| Fensterbänke, innen | Alutür mit Standardbeschlägen, Türschließer und normalem Schloss | 31 | 46 | 58 |"
+        in markdown
+    )
+    assert (
+        "| Fensterbänke, innen | Kunststofftür mit Standardbeschlägen und Schließanlage | 25 | 37 | 47 |"
+        in markdown
+    )
+    assert "BKI Baukosteninformationszentrum" not in markdown
+    assert "Lizenz für" not in markdown
+
+
+def test_bki_text_duplicates_table_detects_flattened_table_paragraph():
+    table = {
+        "markdown_table": (
+            "| Gebäudeart | Rohbau | Ausbau | TA |\n"
+            "| Einzel- und Doppelgaragen, 7 Objekte, S. 992 | 62,7 | 6,5 | 1,1 |\n"
+            "| Mehrfachgaragen, 8 Objekte, S. 998 | 71,8 | 13,0 | 5,1 |\n"
+            "| Hochgaragen, 6 Objekte, S. 1004 | 75,4 | 12,0 | 8,0 |\n"
+            "| Friedhofsgebäude, 18 Objekte, S. 1126 | 53,7 | 26,0 | 11,5 |"
+        )
+    }
+    text = (
+        "Gebäudeart Rohbau Ausbau TA Einzel- und Doppelgaragen, 7 Objekte, S. 992 "
+        "62,7 6,5 1,1 Mehrfachgaragen, 8 Objekte, S. 998 71,8 13,0 5,1 "
+        "Hochgaragen, 6 Objekte, S. 1004 75,4 12,0 8,0 "
+        "Friedhofsgebäude, 18 Objekte, S. 1126 53,7 26,0 11,5"
+    )
+
+    assert bki_text_duplicates_table(text, [table])
 
 
 def test_extract_business_card_content():
